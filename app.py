@@ -10,8 +10,8 @@ import pandas as pd
 import streamlit as st
 
 from core import analytics, tax
-from core.data_service import (CATALOG, default_teilfreistellung, display_name, load_prices,
-                               to_returns)
+from core.data_service import (CATALOG, PROXIES, default_teilfreistellung, display_name,
+                               load_prices, to_returns)
 from core.optimizer import (cvar, diluted_weights, earliest_month, portfolio_stats,
                             target_weights)
 from core.rebalancer import build_plan, sell_rebalance
@@ -64,7 +64,7 @@ def preset_frame(name: str) -> pd.DataFrame:
 @st.cache_data(ttl=3600, show_spinner="Lade Kurse …")
 def cached_prices(tickers: tuple[str, ...], years: int, allow_live: bool):
     data = load_prices(list(tickers), years, allow_live)
-    return data.prices, data.source, data.missing
+    return data.prices, data.source, data.missing, data.etf_start
 
 
 @st.cache_data(show_spinner="Berechne Ziel-Depot …")
@@ -120,13 +120,13 @@ if depot.empty or depot["Bestand €"].sum() <= 0:
 # --------------------------------------------------------------------------- Daten
 with st.sidebar:
     with st.expander("Annahmen & Daten"):
-        years = st.slider("Kurshistorie in Jahren", 5, 15, 12)
+        years = st.slider("Kurshistorie ab Jahr", 2000, 2021, 2000)
         rf = st.slider("Risikofreier Zins in %", 0.0, 5.0, 2.5, 0.25) / 100
         allowance = float(st.number_input("Freier Sparerpauschbetrag in €", 0, 2000, 1000, 100))
         fee = float(st.number_input("Ordergebühr je Verkauf/Kauf in €", 0.0, 20.0, 1.0, 0.5))
         allow_live = st.toggle("Live-Kurse von Yahoo Finance", value=True)
 
-prices, source, missing = cached_prices(tuple(depot["Ticker"]), years, allow_live)
+prices, source, missing, etf_start = cached_prices(tuple(depot["Ticker"]), years, allow_live)
 if missing:
     st.warning("Keine Kursdaten für: " + ", ".join(missing) + ". Diese Positionen werden ignoriert.")
     depot = depot[~depot["Ticker"].isin(missing)]
@@ -184,6 +184,20 @@ theme.hero(
      ("", f"{len(returns):,} Börsentage".replace(",", ".")),
      ("", f"Depot {eur(V)}"), ("", f"Sparrate {eur(budget)} / Monat")])
 
+proxied = [t for t in tickers if etf_start[t] > prices.index[0] + pd.Timedelta(days=10)]
+if proxied:
+    with st.expander(f"Datenhinweis: Kurse ab {prices.index[0]:%m/%Y}, bei {len(proxied)} "
+                     "Positionen vor ETF-Auflage mit Ersatz-Reihe"):
+        st.dataframe(pd.DataFrame({
+            "Position": [display_name(t) for t in proxied],
+            "Echter ETF-Kurs ab": [f"{etf_start[t]:%m/%Y}" for t in proxied],
+            "Davor verwendet": [PROXIES[t][2] if t in PROXIES else "–" for t in proxied],
+        }), hide_index=True, width="stretch")
+        st.caption("Die ETFs gibt es erst seit 2008 bis 2019. Für die Jahre davor steht eine "
+                   "Ersatz-Reihe in Euro vor dem ETF-Kurs. Das zeigt, wie sich die Anlageklasse "
+                   "verhalten hat, ist aber kein echter ETF-Kurs. Offensichtliche Datenfehler von "
+                   "Yahoo Finance werden herausgefiltert.")
+
 tab_why, tab_check, tab_plan, tab_market, tab_stress, tab_arch = st.tabs(
     ["Problem & Idee", "Depot-Check", "Sparplan-Fahrplan", "Gegen den Markt", "Stresstest",
      "Architektur"])
@@ -236,8 +250,8 @@ with tab_check:
                    "Gezeigt wird das sicherste Depot, das bis dahin möglich ist. Tipp: Zeitplan "
                    "verlängern oder Sparrate erhöhen.")
     elif loss_now <= limit_eur:
-        st.success("Dein Depot liegt schon unter der Schmerzschwelle. Das Ziel-Depot holt bei "
-                   "gleichem Risiko-Budget mehr Ertrag pro Risiko heraus.")
+        st.success("Dein Depot liegt schon unter der Schmerzschwelle. Das Ziel-Depot nutzt das "
+                   "erlaubte Risiko für mehr erwartete Rendite.")
     better = loss_goal < loss_now
     theme.kpi_row([
         {"label": "Schrecktag heute", "value": eur(-loss_now), "sub": "Ø der 5 % schlechtesten Tage",
@@ -348,16 +362,16 @@ with tab_market:
                 "nutzen, die es damals schon gab, und er verkauft nie.")
     c1, c2 = st.columns([2, 3])
     with c1:
-        sim_years = st.radio("Zeitraum", [3, 5, 7], horizontal=True,
+        sim_years = st.radio("Zeitraum", [3, 5, 10, 20], horizontal=True,
                              format_func=lambda y: f"letzte {y} Jahre")
     with c2:
         bench_name = st.selectbox("Markt-Vergleich (alles in einen ETF)", list(BENCHMARKS))
-    bench_prices, _, bench_missing = cached_prices((BENCHMARKS[bench_name],), years, allow_live)
+    bench_prices, _, bench_missing, _ = cached_prices((BENCHMARKS[bench_name],), years, allow_live)
     sim = None if bench_missing or bench_prices.empty else cached_walk_forward(
         prices, bench_prices.iloc[:, 0], tuple(h), budget, sim_years, rf, limit, w_max, months)
     if sim is None:
         st.info("Für diesen Zeitraum reicht die gemeinsame Kurshistorie des Depots nicht aus. "
-                "Wähle einen kürzeren Zeitraum oder mehr Kurshistorie unter „Annahmen & Daten“.")
+                "Wähle einen kürzeren Zeitraum oder ein früheres Startjahr unter „Annahmen & Daten“.")
     else:
         values, rets, log = sim
         market_label = f"Markt ({bench_name})"
@@ -437,7 +451,7 @@ with tab_stress:
 
     st.divider()
     st.subheader("Blindtest: Hätte die Methode funktioniert?")
-    test_years = st.radio("Blindtest über die letzten …", [1, 2, 3, 5], index=2, horizontal=True,
+    test_years = st.radio("Blindtest über die letzten …", [1, 3, 5, 10], index=1, horizontal=True,
                           format_func=lambda y: f"{y} Jahre")
     result = cached_blind_test(returns, tuple(w_now), rf, limit, w_max, test_years, V)
     if result is None:
@@ -473,7 +487,7 @@ with tab_arch:
             app [label="app.py\\nStreamlit"]; charts [label="ui/charts.py\\nPlotly"];
             theme [label="ui/theme.py\\nDesign"]; }
           subgraph cluster_core { label="Rechenkern (ohne Streamlit, getestet)"; color="#c7d2fe"; fontname="Helvetica";
-            opt [label="optimizer.py\\nCVaR-LP + SLSQP"]; reb [label="rebalancer.py\\nSparplan-Fahrplan"];
+            opt [label="optimizer.py\\nlineare Programme (CVaR)"]; reb [label="rebalancer.py\\nSparplan-Fahrplan"];
             taxn [label="tax.py\\nSteuer & Gebühren"]; ana [label="analytics.py\\nMarktvergleich, Krisen"]; }
           data [label="data_service.py\\nLaden, Bereinigen, Cache"];
           user -> app; app -> charts; app -> theme; app -> opt; app -> reb; app -> taxn; app -> ana;
@@ -484,23 +498,25 @@ with tab_arch:
         st.markdown(
             "1. Tagesrenditen der gemeinsamen Kurshistorie.\n"
             "2. **Sicherstes Depot** per linearem Programm (CVaR nach Rockafellar/Uryasev).\n"
-            "3. **Ziel-Depot**: höchste Sharpe Ratio, solange Schmerzschwelle und Klumpengrenze halten.\n"
+            "3. **Ziel-Depot**: höchste erwartete Rendite, solange Schmerzschwelle und Klumpengrenze halten.\n"
             "4. **Nichts verkaufen** als Nebenbedingung: Jede Position behält mindestens ihren "
             "verwässerten Anteil.\n"
             "5. Daraus die feste Sparplan-Aufteilung und der Steuervergleich.")
-        st.latex(r"\max_{w}\ \frac{w^{\top}\mu - r_f}{\sqrt{w^{\top}\Sigma\, w}}")
+        st.latex(r"\max_{w}\ w^{\top}\mu")
         st.latex(r"\mathrm{CVaR}_{95\,\%}(w)\le \frac{S}{V},\qquad \sum_i w_i=1")
         st.latex(r"\frac{h_i}{V+N\cdot B}\le w_i\le w_{\max}")
         st.caption("S = Schmerzschwelle in €, V = Depotwert, h = Bestand je Position, "
                    "B = Sparrate, N = Monate.")
         st.subheader("Werkzeuge")
-        st.markdown("Python · Streamlit · Plotly · SciPy (HiGHS, SLSQP) · pandas · yfinance · "
+        st.markdown("Python · Streamlit · Plotly · SciPy (HiGHS) · pandas · yfinance · "
                     "pytest · Git/GitHub · Streamlit Community Cloud")
         if REPO_URL:
             st.link_button("Zum GitHub-Repository", REPO_URL)
     st.subheader("Grenzen des Modells")
     st.markdown(
-        "- Vergangene Kurse sagen die Zukunft nicht voraus; Renditen werden deshalb nur zur Hälfte geglaubt.\n"
+        "- Vergangene Kurse sagen die Zukunft nicht voraus. Die Optimierung bevorzugt, was "
+        "bisher gut lief; das muss sich nicht wiederholen.\n"
+        "- Vor Auflage der ETFs stehen Ersatz-Reihen (Indizes, ältere Fonds), teils nur Näherungen.\n"
         "- Kursbewegungen während der Sparplan-Laufzeit werden nicht prognostiziert; der Plan sollte "
         "alle paar Monate neu gerechnet werden.\n"
         "- Die Steuerrechnung ist vereinfacht. Die App ist ein Studienprojekt und keine Anlageberatung.")

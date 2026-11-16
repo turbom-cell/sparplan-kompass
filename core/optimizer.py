@@ -1,6 +1,6 @@
 """Rechenkern: Risikokennzahlen und Ziel-Depot.
 
-Ziel-Depot = höchste Sharpe Ratio unter drei Nebenbedingungen:
+Ziel-Depot = höchste erwartete Rendite unter drei Nebenbedingungen:
   1. Der Verlust an einem Schrecktag (95 %-CVaR) bleibt unter der Schmerzschwelle.
   2. Keine Position ist größer als die Klumpengrenze.
   3. Optional Mindestgewichte je Position. Damit lässt sich "nichts verkaufen"
@@ -13,7 +13,7 @@ from math import ceil
 
 import numpy as np
 from scipy import sparse
-from scipy.optimize import linprog, minimize
+from scipy.optimize import linprog
 
 TRADING_DAYS = 252
 ALPHA = 0.05        # die 5 % schlechtesten Börsentage
@@ -32,18 +32,11 @@ def cvar(weights: np.ndarray, returns: np.ndarray, alpha: float = ALPHA) -> floa
     return float(-worst.mean())
 
 
-def _cvar_grad(weights: np.ndarray, returns: np.ndarray, alpha: float = ALPHA) -> np.ndarray:
-    port = returns @ weights
-    k = _tail_size(len(port), alpha)
-    idx = np.argpartition(port, k - 1)[:k]
-    return -returns[idx].mean(axis=0)
-
-
 def expected_returns(returns: np.ndarray) -> np.ndarray:
     """Jahresrenditen, zur Hälfte auf den Durchschnitt aller Positionen gezogen.
 
-    Historische Mittelwerte sind sehr unsicher. Ohne diese Dämpfung würde die
-    Optimierung alles auf den Gewinner der letzten Jahre setzen.
+    Historische Mittelwerte sind sehr unsicher; die Dämpfung macht die angezeigten
+    Rendite- und Sharpe-Werte vorsichtiger. Die Reihenfolge der Positionen ändert sie nicht.
     """
     mu = returns.mean(axis=0) * TRADING_DAYS
     return (1.0 - MEAN_SHRINK) * mu + MEAN_SHRINK * mu.mean()
@@ -104,8 +97,12 @@ class Target:
 
 
 def target_weights(returns: np.ndarray, rf: float, cvar_limit: float, w_max: float = 1.0,
-                   w_min: np.ndarray | None = None) -> Target:
-    """Maximiert die Sharpe Ratio unter CVaR-Grenze, Klumpengrenze und Mindestgewichten."""
+                   w_min: np.ndarray | None = None, alpha: float = ALPHA) -> Target:
+    """Höchste erwartete Rendite, solange Schmerzschwelle, Klumpengrenze und Mindestgewichte halten.
+
+    Lineares Programm (Rockafellar/Uryasev): exakt lösbar, kein Startwert nötig.
+    `rf` wird für die Lösung nicht gebraucht und bleibt nur für eine einheitliche Schnittstelle.
+    """
     T, n = returns.shape
     if n == 1:
         return Target(np.array([1.0]), "ok", cvar(np.array([1.0]), returns))
@@ -116,32 +113,23 @@ def target_weights(returns: np.ndarray, rf: float, cvar_limit: float, w_max: flo
     if cvar_limit <= cvar_min * 1.001:
         return Target(w_safe, "unreachable", cvar_min)
 
-    mu, cov = expected_returns(returns), covariance(returns)
-
-    def neg_sharpe(w):
-        return -(w @ mu - rf) / np.sqrt(w @ cov @ w)
-
-    cons = [
-        {"type": "eq", "fun": lambda w: w.sum() - 1.0},
-        {"type": "ineq", "fun": lambda w: cvar_limit - cvar(w, returns),
-         "jac": lambda w: -_cvar_grad(w, returns)},
-    ]
-    spread = np.clip(lo + (1.0 - lo.sum()) / n, lo, hi)
-    spread = spread / spread.sum()
-    starts = [w_safe, 0.5 * w_safe + 0.5 * spread, 0.85 * w_safe + 0.15 * spread]
-
-    best, best_val = w_safe, neg_sharpe(w_safe)
-    for w0 in starts:
-        res = minimize(neg_sharpe, w0, method="SLSQP", bounds=list(zip(lo, hi)), constraints=cons,
-                       options={"maxiter": 300, "ftol": 1e-10})
-        w = np.clip(res.x, lo, hi)
-        w = w / w.sum()
-        feasible = (cvar(w, returns) <= cvar_limit * 1.002
-                    and (w >= lo - 1e-4).all() and (w <= hi + 1e-4).all())
-        if feasible and neg_sharpe(w) < best_val:
-            best, best_val = w, neg_sharpe(w)
-    best = np.where(best < 1e-4, 0.0, best)
-    return Target(best / best.sum(), "ok", cvar_min)
+    k = _tail_size(T, alpha)
+    mu = expected_returns(returns)
+    # Variablen: [w_1..w_n, t, u_1..u_T]; maximiere mu·w
+    c = np.concatenate([-mu, [0.0], np.zeros(T)])
+    tail_rows = sparse.hstack([sparse.csr_matrix(-returns), sparse.csr_matrix(-np.ones((T, 1))),
+                               -sparse.identity(T, format="csr")], format="csr")
+    limit_row = sparse.csr_matrix(np.concatenate([np.zeros(n), [1.0], np.full(T, 1.0 / k)]))
+    A_ub = sparse.vstack([tail_rows, limit_row], format="csr")
+    b_ub = np.concatenate([np.zeros(T), [cvar_limit]])
+    A_eq = np.concatenate([np.ones(n), [0.0], np.zeros(T)]).reshape(1, -1)
+    bounds = list(zip(lo, hi)) + [(None, None)] + [(0.0, None)] * T
+    res = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=[1.0], bounds=bounds, method="highs")
+    if not res.success:
+        return Target(w_safe, "ok", cvar_min)
+    w = np.clip(res.x[:n], lo, hi)
+    w = np.where(w < 1e-5, 0.0, w)
+    return Target(w / w.sum(), "ok", cvar_min)
 
 
 def diluted_weights(holdings: np.ndarray, budget: float, months: int) -> np.ndarray:

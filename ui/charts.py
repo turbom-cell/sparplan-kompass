@@ -138,7 +138,7 @@ def _shade_crises(fig: go.Figure, index: pd.DatetimeIndex, crises: dict[str, tup
         fig.add_vrect(x0=max(pd.Timestamp(start), index[0]), x1=pd.Timestamp(end),
                       fillcolor="#e11d48", opacity=0.07, line_width=0,
                       annotation_text=name, annotation_position="top left",
-                      annotation_font=dict(size=11, color="#9f1239"))
+                      annotation_textangle=-90, annotation_font=dict(size=10, color="#9f1239"))
 
 
 def compare_lines(values: pd.DataFrame, market_label: str,

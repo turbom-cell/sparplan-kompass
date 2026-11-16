@@ -93,7 +93,7 @@ def test_sell_cost():
 
 
 def test_snapshot_and_analytics():
-    data = load_prices(["EUNL.DE", "SXRV.DE", "4GLD.DE"], years=15, allow_live=False)
+    data = load_prices(["EUNL.DE", "SXRV.DE", "4GLD.DE"], start_year=2014, allow_live=False)
     assert data.source == "snapshot" and not data.missing
     r = to_returns(data.prices)
     assert not r.isna().any().any()
@@ -114,8 +114,8 @@ def test_clean_prices_reports_missing():
 def test_walk_forward_is_fair_and_never_sells():
     from core.analytics import compare_stats, underwater, walk_forward
     tickers = ["SXRV.DE", "EUNL.DE", "EUNH.DE", "4GLD.DE"]
-    prices = load_prices(tickers, 12, allow_live=False).prices
-    bench = load_prices(["EUNL.DE"], 12, allow_live=False).prices["EUNL.DE"]
+    prices = load_prices(tickers, 2014, allow_live=False).prices
+    bench = load_prices(["EUNL.DE"], 2014, allow_live=False).prices["EUNL.DE"]
     h = np.array([7000.0, 3000.0, 0.0, 0.0])
     out = walk_forward(prices, bench, h, 500.0, 3, 0.025, 0.02, 0.4, 12)
     assert out is not None
@@ -131,3 +131,25 @@ def test_walk_forward_is_fair_and_never_sells():
     assert (underwater(rets).values <= 1e-9).all()
     # zu wenig Historie -> kein Ergebnis statt falscher Zahlen
     assert walk_forward(prices.tail(400), bench, h, 500.0, 3, 0.025, 0.02, 0.4, 12) is None
+
+
+def test_repair_and_splice():
+    from core.data_service import repair_etf, splice
+    idx = pd.date_range("2020-01-01", periods=12, freq="B")
+    etf = pd.Series([140, 141, 139, 100, 101, 130, 101, 102, 103, 104, 105, 106.0], index=idx)
+    fixed = repair_etf(etf)
+    assert fixed.index[0] == idx[3]                 # Niveausprung 139 -> 100: alles davor verworfen
+    assert fixed.loc[idx[5]] == 101                 # Ausreißer 130 ersetzt
+    assert fixed.pct_change().abs().max() < 0.02
+    proxy = pd.Series([50.0, 55.0, 60.0, 66.0], index=pd.date_range("2019-12-27", periods=4, freq="B"))
+    joined = splice(fixed, proxy.reindex(proxy.index.union(fixed.index[:1])).ffill())
+    assert joined.loc[fixed.index[0]] == 100        # ETF-Kurs bleibt unverändert
+    assert joined.iloc[0] == pytest.approx(100 * 50 / 66)   # Ersatz-Reihe auf den ETF skaliert
+    assert joined.index.is_monotonic_increasing and not joined.index.has_duplicates
+
+
+def test_long_history_reaches_2000():
+    data = load_prices(["SXR8.DE", "EXS1.DE", "EUNL.DE"], 2000, allow_live=False)
+    assert data.prices.index[0].year == 2000
+    assert data.etf_start["SXR8.DE"].year >= 2010   # davor Ersatz-Reihe
+    assert to_returns(data.prices).abs().max().max() < 0.15

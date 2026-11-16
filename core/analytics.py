@@ -7,6 +7,9 @@ import pandas as pd
 from .optimizer import target_weights
 
 CRISES: dict[str, tuple[str, str]] = {
+    "Dotcom-Crash": ("2000-09-04", "2003-03-12"),
+    "Finanzkrise": ("2007-10-09", "2009-03-09"),
+    "Euro-Krise 2011": ("2011-05-02", "2011-10-04"),
     "Ausverkauf Ende 2018": ("2018-10-03", "2018-12-27"),
     "Corona-Crash 2020": ("2020-02-19", "2020-03-23"),
     "Zinswende 2022": ("2022-01-03", "2022-10-12"),

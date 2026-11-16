@@ -11,7 +11,8 @@ Umschichten an Steuern und Gebühren kosten würde.
 
 - Depot eingeben (Bestand und Einstand je ETF), Kauf-Kandidaten mit 0 € Bestand ergänzen
 - Schmerzschwelle in Euro statt Risiko in Prozent (95 %-CVaR eines Börsentags)
-- Ziel-Depot, das allein durch Zukäufe erreichbar ist (Nebenbedingung „nichts verkaufen“)
+- Ziel-Depot mit der höchsten erwarteten Rendite innerhalb der Schmerzschwelle, allein durch Zukäufe erreichbar (Nebenbedingung „nichts verkaufen“)
+- Kurshistorie ab 2000: vor Auflage der ETFs stehen Ersatz-Reihen (Index oder älterer Fonds in Euro), in der App offen ausgewiesen
 - Feste Sparplan-Aufteilung für den gewählten Zeitraum, animierter Weg ins Ziel
 - Steuervergleich: sofort umschichten gegen Sparplan (Abgeltungsteuer, Teilfreistellung, Pauschbetrag)
 - Marktvergleich mit echten Kursen: Sparplan-Kompass gegen „weiter wie bisher“ und einen Markt-ETF, ohne Blick in die Zukunft
@@ -24,13 +25,14 @@ Umschichten an Steuern und Gebühren kosten würde.
 | `app.py` | Oberfläche (Streamlit): Eingaben, Tabs, Texte |
 | `ui/charts.py` | Grafiken (Plotly) |
 | `ui/theme.py` | Design: Farben, CSS, Kennzahl-Karten |
-| `core/data_service.py` | Kurse laden (Yahoo Finance), bereinigen, Notfall-Snapshot |
-| `core/optimizer.py` | CVaR, sicherstes Depot (lineares Programm), Ziel-Depot (SLSQP) |
+| `core/data_service.py` | Kurse laden (Yahoo Finance), Datenfehler filtern, Ersatz-Reihen ansetzen, Notfall-Snapshot |
+| `core/optimizer.py` | CVaR, sicherstes Depot und Ziel-Depot (lineare Programme, HiGHS) |
 | `core/rebalancer.py` | Sparplan-Fahrplan ohne Verkäufe |
 | `core/tax.py` | Steuer und Gebühren beim Verkauf |
 | `core/analytics.py` | Marktvergleich (Walk-Forward), Krisen-Stresstest, Blindtest |
 | `tests/test_core.py` | Tests für den Rechenkern |
 | `data/sample_prices.csv` | Kurs-Snapshot, falls Yahoo Finance nicht antwortet |
+| `data/proxy_history.csv` | Ersatz-Reihen in Euro für die Zeit vor ETF-Auflage (ab 1999) |
 
 `core/` kennt weder Streamlit noch Plotly und lässt sich deshalb ohne Oberfläche testen.
 
