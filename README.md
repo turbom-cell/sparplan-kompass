@@ -1,5 +1,7 @@
 # Sparplan-Kompass
 
+**Live-App:** https://sparplan-kompass.streamlit.app
+
 Web-App für Privatanleger mit ETF-Sparplan: Depot-Risiko senken, **ohne zu verkaufen**.
 Die App berechnet, wie die monatliche Sparrate aufgeteilt werden muss, damit das Depot
 eine selbst gewählte Schmerzschwelle in Euro einhält, und zeigt daneben, was sofortiges
@@ -61,7 +63,7 @@ python scripts/update_sample.py
 1. Diesen Ordner als eigenes GitHub-Repository hochladen.
 2. Auf share.streamlit.io mit dem GitHub-Konto anmelden, „Create app“ wählen.
 3. Repository, Branch `main` und Hauptdatei `app.py` auswählen, „Deploy“.
-4. Die öffentliche Adresse in `app.py` bei `REPO_URL` bzw. hier im README eintragen.
+4. Jeder Push auf `main` aktualisiert die Live-App automatisch.
 
 Antwortet Yahoo Finance in der Cloud nicht, nutzt die App automatisch den Snapshot
 und zeigt das oben in der App an.

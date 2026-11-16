@@ -17,7 +17,7 @@ from core.optimizer import (cvar, diluted_weights, earliest_month, portfolio_sta
 from core.rebalancer import build_plan, sell_rebalance
 from ui import charts
 
-REPO_URL = ""  # nach dem Anlegen des GitHub-Repos hier eintragen
+REPO_URL = "https://github.com/turbom-cell/sparplan-kompass"
 
 st.set_page_config(page_title="Sparplan-Kompass", page_icon="🧭", layout="wide")
 
