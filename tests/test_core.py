@@ -109,3 +109,25 @@ def test_clean_prices_reports_missing():
     raw = pd.DataFrame({"A": np.linspace(1, 2, 100)}, index=idx)
     prices, missing = clean_prices(raw, ["A", "B"])
     assert list(prices.columns) == ["A"] and missing == ["B"]
+
+
+def test_walk_forward_is_fair_and_never_sells():
+    from core.analytics import compare_stats, underwater, walk_forward
+    tickers = ["SXRV.DE", "EUNL.DE", "EUNH.DE", "4GLD.DE"]
+    prices = load_prices(tickers, 12, allow_live=False).prices
+    bench = load_prices(["EUNL.DE"], 12, allow_live=False).prices["EUNL.DE"]
+    h = np.array([7000.0, 3000.0, 0.0, 0.0])
+    out = walk_forward(prices, bench, h, 500.0, 3, 0.025, 0.02, 0.4, 12)
+    assert out is not None
+    values, rets, log = out
+    # alle drei zahlen gleich viel ein
+    months = int(round((values["Eingezahlt"].iloc[-1] - 10000.0) / 500.0))
+    assert 35 <= months <= 37
+    # der Kompass kauft nur: jede Aufteilung ist >= 0 und verteilt genau die Sparrate
+    assert (log.values >= -1e-9).all()
+    assert np.allclose(log.sum(axis=1), 500.0)
+    stats = compare_stats(values, rets, 0.025)
+    assert set(stats.index) == {"Sparplan-Kompass", "Weiter wie bisher", "Markt"}
+    assert (underwater(rets).values <= 1e-9).all()
+    # zu wenig Historie -> kein Ergebnis statt falscher Zahlen
+    assert walk_forward(prices.tail(400), bench, h, 500.0, 3, 0.025, 0.02, 0.4, 12) is None

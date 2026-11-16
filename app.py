@@ -15,11 +15,14 @@ from core.data_service import (CATALOG, default_teilfreistellung, display_name, 
 from core.optimizer import (cvar, diluted_weights, earliest_month, portfolio_stats,
                             target_weights)
 from core.rebalancer import build_plan, sell_rebalance
-from ui import charts
+from ui import charts, theme
 
 REPO_URL = "https://github.com/turbom-cell/sparplan-kompass"
+BENCHMARKS = {"MSCI World": "EUNL.DE", "S&P 500": "SXR8.DE", "Nasdaq 100": "SXRV.DE",
+              "DAX": "EXS1.DE", "STOXX Europe 600": "EXSA.DE"}
 
 st.set_page_config(page_title="Sparplan-Kompass", page_icon="🧭", layout="wide")
+theme.inject()
 
 PRESETS: dict[str, list[tuple[str, int, int]]] = {   # (Ticker, Bestand €, Einstand €)
     "Tech-lastig (Klumpenrisiko)": [
@@ -43,6 +46,10 @@ def eur(x: float, digits: int = 0) -> str:
 
 def pct(x: float, digits: int = 1) -> str:
     return f"{x * 100:.{digits}f} %".replace(".", ",")
+
+
+def num(x: float, digits: int = 1, sign: bool = False) -> str:
+    return f"{x:{'+' if sign else ''}.{digits}f}".replace(".", ",")
 
 
 def preset_frame(name: str) -> pd.DataFrame:
@@ -79,6 +86,14 @@ def cached_blind_test(returns: pd.DataFrame, w_now: tuple[float, ...], rf: float
     return analytics.blind_test(returns, np.array(w_now), rf, limit, w_max, years, value)
 
 
+@st.cache_data(show_spinner="Spiele die letzten Jahre mit echten Kursen nach …")
+def cached_walk_forward(prices: pd.DataFrame, bench: pd.Series, holdings: tuple[float, ...],
+                        budget: float, years: int, rf: float, limit: float, w_max: float,
+                        horizon: int):
+    return analytics.walk_forward(prices, bench, np.array(holdings), budget, years, rf, limit,
+                                  w_max, horizon)
+
+
 # --------------------------------------------------------------------------- Seitenleiste 1
 with st.sidebar:
     st.header("1 · Dein Depot")
@@ -99,8 +114,7 @@ with st.sidebar:
 
 depot = depot.dropna(subset=["Ticker"]).drop_duplicates("Ticker").fillna(0.0)
 if depot.empty or depot["Bestand €"].sum() <= 0:
-    st.title("🧭 Sparplan-Kompass")
-    st.info("Trage links mindestens eine Position mit Bestand ein.")
+    theme.hero("Sparplan-Kompass", "Trage links mindestens eine Position mit Bestand ein.", [])
     st.stop()
 
 # --------------------------------------------------------------------------- Daten
@@ -126,7 +140,7 @@ names = [display_name(t) for t in tickers]
 returns = to_returns(prices)
 R = returns.values
 h = depot["Bestand €"].to_numpy(dtype=float)
-cost_basis = np.minimum(depot["Einstand €"].to_numpy(dtype=float), np.where(h > 0, np.inf, 0.0))
+cost_basis = np.where(h > 0, depot["Einstand €"].to_numpy(dtype=float), 0.0)
 tf = np.array([default_teilfreistellung(t) for t in tickers])
 V = float(h.sum())
 w_now = h / V
@@ -157,67 +171,87 @@ goal = portfolio_stats(w_goal, R, rf)
 free = portfolio_stats(w_free, R, rf)
 loss_goal = goal.cvar * V
 plan = build_plan(h, w_goal, budget, months, names)
+top = int(np.argmax(w_now))
 
 # --------------------------------------------------------------------------- Kopf
-st.title("🧭 Sparplan-Kompass")
-st.markdown("**Depot-Risiko senken, ohne einen einzigen Anteil zu verkaufen** – nur über die "
-            "Aufteilung deiner Sparrate, also ohne Steuern auf Kursgewinne.")
-span = f"{prices.index[0]:%d.%m.%Y} – {prices.index[-1]:%d.%m.%Y}"
-st.caption(("🟢 Live-Kurse von Yahoo Finance" if source == "live"
-            else "🟡 Gespeicherter Kurs-Snapshot (Yahoo nicht erreichbar oder Live-Kurse aus)")
-           + f" · gemeinsame Historie {span} · {len(returns):,} Börsentage".replace(",", "."))
+theme.hero(
+    "Sparplan-Kompass",
+    "<b>Depot-Risiko senken, ohne einen einzigen Anteil zu verkaufen.</b> Die App verteilt nur "
+    "deine Sparrate neu. So fällt keine Steuer auf Kursgewinne an.",
+    [("#34d399" if source == "live" else "#fbbf24",
+      "Live-Kurse von Yahoo Finance" if source == "live" else "Gespeicherter Kurs-Snapshot"),
+     ("", f"{prices.index[0]:%m/%Y} – {prices.index[-1]:%m/%Y}"),
+     ("", f"{len(returns):,} Börsentage".replace(",", ".")),
+     ("", f"Depot {eur(V)}"), ("", f"Sparrate {eur(budget)} / Monat")])
 
-tab_why, tab_check, tab_plan, tab_stress, tab_arch = st.tabs(
-    ["💡 Problem & Idee", "🩺 Depot-Check", "🗓️ Sparplan-Fahrplan", "🌪️ Stresstest & Blindtest",
-     "🏗️ Architektur"])
+tab_why, tab_check, tab_plan, tab_market, tab_stress, tab_arch = st.tabs(
+    ["Problem & Idee", "Depot-Check", "Sparplan-Fahrplan", "Gegen den Markt", "Stresstest",
+     "Architektur"])
 
 # --------------------------------------------------------------------------- Tab: Problem
 with tab_why:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Dein Depot", eur(V))
-    c2.metric("Verlust an einem Schrecktag", eur(-loss_now), pct(-now.cvar), delta_color="off")
-    top = int(np.argmax(w_now))
-    c3.metric("Größte Position", pct(w_now[top], 0), names[top], delta_color="off")
+    theme.kpi_row([
+        {"label": "Dein Depot", "value": eur(V), "sub": f"{int((h > 0).sum())} Positionen"},
+        {"label": "Verlust an einem Schrecktag", "value": eur(-loss_now),
+         "sub": f"{pct(-now.cvar)} des Depots", "tone": "bad", "accent": theme.RED},
+        {"label": "Größte Position", "value": pct(w_now[top], 0), "sub": names[top],
+         "accent": theme.AMBER},
+        {"label": "Nach dem Sparplan", "value": eur(-loss_goal),
+         "sub": f"{eur(loss_now - loss_goal)} weniger Verlust am Schrecktag", "tone": "good",
+         "accent": theme.GREEN},
+    ])
+    theme.callout(
+        "<b>Der springende Punkt:</b> Fast jedes Tool sagt „verkaufe A, kaufe B“. Das kostet in "
+        "Deutschland Steuern. Der Sparplan-Kompass erreicht ein ruhigeres Depot <b>nur über die "
+        "Aufteilung der nächsten Sparraten</b> und zeigt das Risiko in Euro statt in Prozent.")
     left, right = st.columns(2)
     with left:
         st.subheader("Für wen?")
         st.markdown(
-            "Privatanleger mit ETF-Sparplan bei Neobrokern: Studierende und Berufseinsteiger, "
-            "die seit ein paar Jahren 2 bis 6 ETFs besparen.")
+            "Privatanleger mit ETF-Sparplan bei Neobrokern: Studierende, Berufseinsteiger und "
+            "langjährige Sparer, die 2 bis 6 ETFs besparen.")
         st.subheader("Welches Problem?")
         st.markdown(
             "- **Klumpen entstehen von selbst.** Was gut läuft, wird im Depot immer größer.\n"
             "- **Risiko in Prozent versteht niemand.** „1,8 % Tages-CVaR“ sagt einem Anleger nichts.\n"
-            "- **Umschichten kostet Geld.** Wer in Deutschland verkauft, zahlt auf Kursgewinne "
-            "26,375 % Steuer plus Ordergebühren.")
+            "- **Umschichten kostet Geld.** Wer verkauft, zahlt auf Kursgewinne 26,375 % Steuer "
+            "plus Ordergebühren.")
     with right:
-        st.subheader("Was macht die App anders?")
-        st.markdown(
-            "1. Sie startet beim **bestehenden Depot**, nicht bei einem Wunschportfolio.\n"
-            "2. Risiko wird als **Schmerzschwelle in Euro** eingestellt.\n"
-            "3. Das Ziel-Depot wird so berechnet, dass es **allein durch Zukäufe** erreichbar ist.\n"
-            "4. Ergebnis ist eine **feste Sparplan-Aufteilung**, die man beim Broker einstellt.\n"
-            "5. Daneben steht, was **Verkaufen heute an Steuern kosten** würde.")
-        st.info("Links Depot, Sparrate und Schmerzschwelle verändern – alle Tabs rechnen sofort neu.")
+        st.subheader("So funktioniert es")
+        theme.steps([
+            ("Depot eingeben", "Bestand je ETF und die monatliche Sparrate."),
+            ("Schmerzschwelle wählen", "Wie viel Euro darf ein schlechter Börsentag kosten?"),
+            ("Fahrplan bekommen", "Feste Sparplan-Aufteilung, mit der das Depot ins Ziel wächst."),
+            ("Gegenprobe ansehen", "Vergleich mit dem echten Markt über die letzten Jahre."),
+        ])
+    st.caption("Links Depot, Sparrate und Schmerzschwelle verändern – alle Tabs rechnen sofort neu.")
 
 # --------------------------------------------------------------------------- Tab: Depot-Check
 with tab_check:
     if status == "unreachable":
-        hint = (f"frühestens nach **{first_month} Monaten**" if first_month
+        hint = (f"frühestens nach <b>{first_month} Monaten</b>" if first_month
                 else "auch nach 10 Jahren nicht")
         st.warning(f"Mit {months} Monaten Sparrate ist die Schmerzschwelle von {eur(limit_eur)} ohne "
-                   f"Verkäufe noch nicht erreichbar ({hint}). Gezeigt wird das sicherste Depot, das "
-                   f"bis dahin möglich ist. Tipp: Zeitplan verlängern oder Sparrate erhöhen.")
+                   f"Verkäufe noch nicht erreichbar ({hint.replace('<b>', '**').replace('</b>', '**')}). "
+                   "Gezeigt wird das sicherste Depot, das bis dahin möglich ist. Tipp: Zeitplan "
+                   "verlängern oder Sparrate erhöhen.")
     elif loss_now <= limit_eur:
         st.success("Dein Depot liegt schon unter der Schmerzschwelle. Das Ziel-Depot holt bei "
                    "gleichem Risiko-Budget mehr Ertrag pro Risiko heraus.")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Schrecktag heute", eur(-loss_now))
-    c2.metric(f"Schrecktag im Ziel (Monat {months})", eur(-loss_goal), eur(loss_now - loss_goal),
-              help="Bezogen auf den heutigen Depotwert, damit die Zahlen vergleichbar bleiben.")
-    c3.metric("Schwankung p.a.", pct(goal.vol), pct(goal.vol - now.vol), delta_color="inverse")
-    c4.metric("Sharpe Ratio", f"{goal.sharpe:.2f}".replace(".", ","),
-              f"{goal.sharpe - now.sharpe:+.2f}".replace(".", ","))
+    better = loss_goal < loss_now
+    theme.kpi_row([
+        {"label": "Schrecktag heute", "value": eur(-loss_now), "sub": "Ø der 5 % schlechtesten Tage",
+         "accent": theme.SLATE},
+        {"label": f"Schrecktag im Ziel (Monat {months})", "value": eur(-loss_goal),
+         "sub": f"{eur(abs(loss_now - loss_goal))} {'weniger' if better else 'mehr'}",
+         "tone": "good" if better else "bad", "accent": theme.BLUE},
+        {"label": "Schwankung p.a.", "value": pct(goal.vol),
+         "sub": f"{num((goal.vol - now.vol) * 100, 1, True)} Prozentpunkte",
+         "tone": "good" if goal.vol < now.vol else "bad", "accent": theme.BLUE},
+        {"label": "Sharpe Ratio", "value": num(goal.sharpe, 2),
+         "sub": f"{num(goal.sharpe - now.sharpe, 2, True)} gegenüber heute",
+         "tone": "good" if goal.sharpe >= now.sharpe else "bad", "accent": theme.BLUE},
+    ])
     left, right = st.columns(2)
     with left:
         st.subheader("Gewichte: heute und Ziel")
@@ -227,7 +261,8 @@ with tab_check:
         st.plotly_chart(charts.loss_histogram(R @ w_now * V, R @ w_goal * V, loss_now, loss_goal,
                                               limit_eur), width="stretch")
     st.caption("Gestrichelte Linien: durchschnittlicher Verlust an den 5 % schlechtesten Tagen "
-               "(grau = heute, blau = Ziel). Rote Linie: deine Schmerzschwelle.")
+               "(grau = heute, blau = Ziel). Rote Linie: deine Schmerzschwelle. Alle Euro-Werte "
+               "beziehen sich auf den heutigen Depotwert.")
     with st.expander("Wie hängen die Positionen zusammen? (Korrelationen)"):
         st.plotly_chart(charts.correlation_heatmap(returns, names), width="stretch")
 
@@ -273,31 +308,121 @@ with tab_plan:
     cost = tax.sell_cost(trades, h, cost_basis, tf, allowance, fee)
     a, b = st.columns(2)
     with a:
-        st.markdown("#### 🔴 Sofort umschichten")
-        x1, x2, x3 = st.columns(3)
-        x1.metric("Verkäufe", eur(cost.sold))
-        x2.metric("Steuer + Gebühren", eur(cost.total))
-        x3.metric("Schrecktag danach", eur(-free.cvar * V))
+        st.markdown("#### Sofort umschichten")
+        theme.kpi_row([
+            {"label": "Verkäufe", "value": eur(cost.sold), "accent": theme.RED},
+            {"label": "Steuer + Gebühren", "value": eur(cost.total), "accent": theme.RED,
+             "sub": f"{num(cost.total / budget, 1)} Monatssparraten", "tone": "bad"},
+            {"label": "Schrecktag danach", "value": eur(-free.cvar * V), "accent": theme.RED,
+             "sub": "sofort"},
+        ])
         st.caption(f"Realisierter Gewinn {eur(cost.gain)}, davon steuerpflichtig {eur(cost.taxable)} "
                    f"(nach Teilfreistellung und Pauschbetrag). Steuer {eur(cost.tax)}, "
                    f"Gebühren {eur(cost.fees)}.")
     with b:
-        st.markdown("#### 🟢 Über den Sparplan")
-        y1, y2, y3 = st.columns(3)
-        y1.metric("Verkäufe", eur(0))
-        y2.metric("Steuer + Gebühren", eur(0))
-        y3.metric(f"Schrecktag in Monat {months}", eur(-loss_goal))
+        st.markdown("#### Über den Sparplan")
+        theme.kpi_row([
+            {"label": "Verkäufe", "value": eur(0), "accent": theme.GREEN},
+            {"label": "Steuer + Gebühren", "value": eur(0), "accent": theme.GREEN,
+             "sub": "nichts verkauft", "tone": "good"},
+            {"label": f"Schrecktag in Monat {months}", "value": eur(-loss_goal),
+             "accent": theme.GREEN, "sub": "Preis: Wartezeit"},
+        ])
         st.caption("Keine Verkäufe, also keine Steuer auf Kursgewinne. Sparplan-Ausführungen sind "
-                   "bei den meisten Neobrokern gebührenfrei. Der Preis ist die Wartezeit.")
+                   "bei den meisten Neobrokern gebührenfrei.")
     if cost.total > 0:
-        st.info(f"Sofort umschichten kostet **{eur(cost.total)}**. Das entspricht "
-                f"**{str(round(cost.total / budget, 1)).replace('.', ',')} Monatssparraten**, "
-                f"die nie wieder für dich mitarbeiten.")
+        theme.callout(f"Sofort umschichten kostet <b>{eur(cost.total)}</b>. Das entspricht "
+                      f"<b>{num(cost.total / budget, 1)} Monatssparraten</b>, die nie wieder für "
+                      "dich mitarbeiten.")
     else:
         st.info("Bei diesem Depot fiele beim Verkaufen keine Steuer an (Gewinne unter dem "
                 "Pauschbetrag). Dann ist sofortiges Umschichten der schnellere Weg.")
     st.caption("Vereinfachte Rechnung, keine Steuerberatung: ohne Kirchensteuer, Vorabpauschale und "
                "FIFO-Reihenfolge; Teilfreistellung 30 % für Aktienfonds, 0 % für Anleihen und Gold.")
+
+# --------------------------------------------------------------------------- Tab: Marktvergleich
+with tab_market:
+    st.subheader("Sparplan-Kompass gegen den echten Markt")
+    st.markdown("Drei Anleger starten mit **demselben Depot** und zahlen **dieselbe Sparrate** ein. "
+                "Gerechnet wird mit echten Tageskursen. Der Kompass darf an jedem Stichtag nur Kurse "
+                "nutzen, die es damals schon gab, und er verkauft nie.")
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        sim_years = st.radio("Zeitraum", [3, 5, 7], horizontal=True,
+                             format_func=lambda y: f"letzte {y} Jahre")
+    with c2:
+        bench_name = st.selectbox("Markt-Vergleich (alles in einen ETF)", list(BENCHMARKS))
+    bench_prices, _, bench_missing = cached_prices((BENCHMARKS[bench_name],), years, allow_live)
+    sim = None if bench_missing or bench_prices.empty else cached_walk_forward(
+        prices, bench_prices.iloc[:, 0], tuple(h), budget, sim_years, rf, limit, w_max, months)
+    if sim is None:
+        st.info("Für diesen Zeitraum reicht die gemeinsame Kurshistorie des Depots nicht aus. "
+                "Wähle einen kürzeren Zeitraum oder mehr Kurshistorie unter „Annahmen & Daten“.")
+    else:
+        values, rets, log = sim
+        market_label = f"Markt ({bench_name})"
+        stats = analytics.compare_stats(values, rets, rf)
+        k, s, m = stats.loc["Sparplan-Kompass"], stats.loc["Weiter wie bisher"], stats.loc["Markt"]
+        dd = analytics.underwater(rets)
+
+        def versus(mine: float, other: float, unit: str, lower_is_better: bool, digits: int = 1):
+            diff = mine - other
+            good = diff < 0 if lower_is_better else diff > 0
+            if unit == "€":
+                text = f"{eur(abs(diff))} {'weniger' if diff < 0 else 'mehr'} als der Markt"
+            else:
+                text = f"{num(abs(diff), digits)} {unit} {'weniger' if diff < 0 else 'mehr'} als der Markt"
+            return {"sub": text, "tone": "good" if good else "bad"}
+
+        theme.kpi_row([
+            {"label": "Größter Einbruch", "value": f"{num(k['Größter Einbruch %'])} %",
+             "accent": theme.BLUE,
+             **versus(-k["Größter Einbruch %"], -m["Größter Einbruch %"], "Punkte", True)},
+            {"label": "Verlust am Schrecktag", "value": f"{num(-k['Schrecktag %'], 2)} %",
+             "accent": theme.BLUE, **versus(k["Schrecktag %"], m["Schrecktag %"], "Punkte", True, 2)},
+            {"label": "Ertrag pro Risiko (Sharpe)", "value": num(k["Sharpe"], 2),
+             "accent": theme.BLUE, **versus(k["Sharpe"], m["Sharpe"], "", False, 2)},
+            {"label": "Endwert", "value": eur(k["Endwert €"]), "accent": theme.BLUE,
+             **versus(k["Endwert €"], m["Endwert €"], "€", False)},
+        ])
+
+        calmer = k["Größter Einbruch %"] > m["Größter Einbruch %"]
+        richer = k["Endwert €"] >= m["Endwert €"]
+        gap = abs(k["Endwert €"] - m["Endwert €"])
+        risk_text = (f"Der größte Einbruch lag bei <b>{num(k['Größter Einbruch %'])} %</b> statt "
+                     f"{num(m['Größter Einbruch %'])} % im Markt und {num(s['Größter Einbruch %'])} % "
+                     "bei „weiter wie bisher“." if calmer else
+                     f"In diesem Zeitraum war der Kompass <b>nicht</b> ruhiger als der Markt "
+                     f"({num(k['Größter Einbruch %'])} % gegen {num(m['Größter Einbruch %'])} %).")
+        money_text = (f"Am Ende stehen sogar <b>{eur(gap)} mehr</b> auf dem Depot." if richer else
+                      f"Der Preis dafür: <b>{eur(gap)} weniger Endwert</b> als der Markt.")
+        theme.callout(f"{risk_text} {money_text}")
+
+        st.plotly_chart(charts.compare_lines(values, market_label, analytics.CRISES), width="stretch")
+        st.caption("Depotwert in Euro inklusive aller Sparraten. Rot hinterlegt: echte Krisenphasen. "
+                   "Unten im Schieber lässt sich der Zeitraum eingrenzen.")
+        st.subheader("Wie tief ging es zwischendurch runter?")
+        st.plotly_chart(charts.underwater_lines(dd, market_label, analytics.CRISES), width="stretch")
+        st.caption("Abstand zum bisherigen Höchststand, ohne den Effekt der Einzahlungen. "
+                   "Je flacher die Kurve, desto ruhiger schläft der Anleger.")
+
+        show = stats.rename(index={"Markt": market_label})
+        st.dataframe(show, width="stretch", column_config={
+            "Endwert €": st.column_config.NumberColumn(format="%.0f"),
+            "Gewinn €": st.column_config.NumberColumn(format="%.0f"),
+            "Rendite p.a. %": st.column_config.NumberColumn(format="%.1f"),
+            "Schwankung p.a. %": st.column_config.NumberColumn(format="%.1f"),
+            "Sharpe": st.column_config.NumberColumn(format="%.2f"),
+            "Schrecktag %": st.column_config.NumberColumn(format="%.2f"),
+            "Größter Einbruch %": st.column_config.NumberColumn(format="%.1f")})
+        with st.expander("Was hat der Kompass wann gekauft?"):
+            st.plotly_chart(charts.purchase_log_bar(log.rename(columns=dict(zip(names, names)))),
+                            width="stretch")
+            st.caption("Alle 6 Monate wird neu gerechnet. Jede Säule zeigt die Sparplan-Aufteilung, "
+                       "die ab diesem Stichtag galt.")
+        st.caption("Ehrliche Einordnung: Das Ziel der Methode ist weniger Verlust in schlechten "
+                   "Phasen, nicht die höchste Rendite. In langen Aufwärtsphasen kann ein reines "
+                   "Aktien-Depot mehr Endwert liefern. Vergangene Kurse sind keine Garantie.")
 
 # --------------------------------------------------------------------------- Tab: Stresstest
 with tab_stress:
@@ -311,27 +436,25 @@ with tab_stress:
                    "Depotwert gerechnet.")
 
     st.divider()
+    st.subheader("Blindtest: Hätte die Methode funktioniert?")
     test_years = st.radio("Blindtest über die letzten …", [1, 2, 3, 5], index=2, horizontal=True,
                           format_func=lambda y: f"{y} Jahre")
-    st.subheader("Blindtest: Hätte die Methode funktioniert?")
     result = cached_blind_test(returns, tuple(w_now), rf, limit, w_max, test_years, V)
     if result is None:
         st.info("Zu wenig Kurshistorie für diesen Blindtest.")
     else:
         curves, split = result
         st.markdown(f"Das Ziel-Depot wird **nur mit Daten bis {split:%d.%m.%Y}** berechnet und dann "
-                    "auf dem Zeitraum danach geprüft, den die Optimierung nie gesehen hat.")
+                    "auf dem Zeitraum danach geprüft, den die Optimierung nie gesehen hat. "
+                    "Hier ohne Sparraten: einmal umgestellt und liegen gelassen.")
         st.plotly_chart(charts.blind_test_lines(curves), width="stretch")
-        stats = analytics.curve_stats(curves, rf)
-        st.dataframe(stats, width="stretch", column_config={
+        st.dataframe(analytics.curve_stats(curves, rf), width="stretch", column_config={
             "Endwert €": st.column_config.NumberColumn(format="%.0f"),
             "Rendite p.a. %": st.column_config.NumberColumn(format="%.1f"),
             "Schwankung p.a. %": st.column_config.NumberColumn(format="%.1f"),
             "Sharpe": st.column_config.NumberColumn(format="%.2f"),
             "Schrecktag %": st.column_config.NumberColumn(format="%.2f"),
             "Größter Einbruch %": st.column_config.NumberColumn(format="%.1f")})
-        st.caption("Ein Blindtest ist kein Versprechen: Er zeigt einen einzigen Zeitraum. "
-                   "Ziel der Methode ist weniger Verlust an schlechten Tagen, nicht die höchste Rendite.")
 
 # --------------------------------------------------------------------------- Tab: Architektur
 with tab_arch:
@@ -340,17 +463,20 @@ with tab_arch:
         st.subheader("Aufbau in drei Schichten")
         st.graphviz_chart("""
         digraph {
-          rankdir=LR; node [shape=box, style="rounded,filled", fontname="Helvetica", fillcolor="#eef2ff"];
-          user [label="Nutzer\\n(Browser)", fillcolor="#fef3c7"];
-          yahoo [label="Yahoo Finance", fillcolor="#f3f4f6"];
-          snap [label="Kurs-Snapshot\\n(CSV im Repo)", fillcolor="#f3f4f6"];
-          subgraph cluster_ui { label="Oberfläche"; color="#c7d2fe";
-            app [label="app.py\\nStreamlit"]; charts [label="ui/charts.py\\nPlotly"]; }
-          subgraph cluster_core { label="Rechenkern (ohne Streamlit, getestet)"; color="#c7d2fe";
+          rankdir=LR; bgcolor="transparent";
+          node [shape=box, style="rounded,filled", fontname="Helvetica", fillcolor="#eff6ff", color="#bfdbfe"];
+          edge [color="#94a3b8"];
+          user [label="Nutzer\\n(Browser)", fillcolor="#fef3c7", color="#fde68a"];
+          yahoo [label="Yahoo Finance", fillcolor="#f1f5f9", color="#e2e8f0"];
+          snap [label="Kurs-Snapshot\\n(CSV im Repo)", fillcolor="#f1f5f9", color="#e2e8f0"];
+          subgraph cluster_ui { label="Oberfläche"; color="#c7d2fe"; fontname="Helvetica";
+            app [label="app.py\\nStreamlit"]; charts [label="ui/charts.py\\nPlotly"];
+            theme [label="ui/theme.py\\nDesign"]; }
+          subgraph cluster_core { label="Rechenkern (ohne Streamlit, getestet)"; color="#c7d2fe"; fontname="Helvetica";
             opt [label="optimizer.py\\nCVaR-LP + SLSQP"]; reb [label="rebalancer.py\\nSparplan-Fahrplan"];
-            taxn [label="tax.py\\nSteuer & Gebühren"]; ana [label="analytics.py\\nKrisen & Blindtest"]; }
+            taxn [label="tax.py\\nSteuer & Gebühren"]; ana [label="analytics.py\\nMarktvergleich, Krisen"]; }
           data [label="data_service.py\\nLaden, Bereinigen, Cache"];
-          user -> app; app -> charts; app -> opt; app -> reb; app -> taxn; app -> ana;
+          user -> app; app -> charts; app -> theme; app -> opt; app -> reb; app -> taxn; app -> ana;
           app -> data; data -> yahoo; data -> snap [style=dashed, label="Notfall"];
         }""")
     with right:

@@ -14,6 +14,7 @@ Umschichten an Steuern und Gebühren kosten würde.
 - Ziel-Depot, das allein durch Zukäufe erreichbar ist (Nebenbedingung „nichts verkaufen“)
 - Feste Sparplan-Aufteilung für den gewählten Zeitraum, animierter Weg ins Ziel
 - Steuervergleich: sofort umschichten gegen Sparplan (Abgeltungsteuer, Teilfreistellung, Pauschbetrag)
+- Marktvergleich mit echten Kursen: Sparplan-Kompass gegen „weiter wie bisher“ und einen Markt-ETF, ohne Blick in die Zukunft
 - Stresstest in historischen Krisen und Blindtest auf ungesehenen Daten
 
 ## Aufbau
@@ -22,11 +23,12 @@ Umschichten an Steuern und Gebühren kosten würde.
 |---|---|
 | `app.py` | Oberfläche (Streamlit): Eingaben, Tabs, Texte |
 | `ui/charts.py` | Grafiken (Plotly) |
+| `ui/theme.py` | Design: Farben, CSS, Kennzahl-Karten |
 | `core/data_service.py` | Kurse laden (Yahoo Finance), bereinigen, Notfall-Snapshot |
 | `core/optimizer.py` | CVaR, sicherstes Depot (lineares Programm), Ziel-Depot (SLSQP) |
 | `core/rebalancer.py` | Sparplan-Fahrplan ohne Verkäufe |
 | `core/tax.py` | Steuer und Gebühren beim Verkauf |
-| `core/analytics.py` | Krisen-Stresstest und Blindtest |
+| `core/analytics.py` | Marktvergleich (Walk-Forward), Krisen-Stresstest, Blindtest |
 | `tests/test_core.py` | Tests für den Rechenkern |
 | `data/sample_prices.csv` | Kurs-Snapshot, falls Yahoo Finance nicht antwortet |
 

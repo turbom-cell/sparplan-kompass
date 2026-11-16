@@ -66,3 +66,93 @@ def curve_stats(curves: pd.DataFrame, rf: float) -> pd.DataFrame:
                      "Schrecktag %": -daily.nsmallest(k).mean() * 100,
                      "Größter Einbruch %": drawdown(v) * 100})
     return pd.DataFrame(rows).set_index("Depot")
+
+
+# --------------------------------------------------------------------------- Marktvergleich
+def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndarray, budget: float,
+                 years: int, rf: float, limit_pct: float, w_max: float, horizon: int,
+                 reopt_months: int = 6, min_train_days: int = 500):
+    """Spielt die letzten `years` Jahre mit echten Kursen nach, Monat für Monat.
+
+    Drei Anleger starten mit demselben Geld und zahlen dieselbe Sparrate ein:
+      - "Sparplan-Kompass": rechnet alle `reopt_months` Monate neu, nur mit Kursen,
+        die es an dem Tag schon gab, und verteilt die Sparrate entsprechend. Verkauft nie.
+      - "Weiter wie bisher": Sparrate nach den Start-Gewichten des Depots.
+      - "Markt": alles in den Vergleichs-ETF.
+    Rückgabe: (Depotwerte in €, Tagesrenditen ohne Einzahlungseffekt, Kauf-Protokoll) oder None.
+    """
+    from .optimizer import diluted_weights
+    from .rebalancer import build_plan
+
+    common = prices.index.intersection(bench.index)
+    prices, bench = prices.loc[common], bench.loc[common]
+    returns = prices.pct_change().dropna()
+    bench_ret = bench.pct_change().dropna()
+    start = returns.index[-1] - pd.DateOffset(years=years)
+    sim_days = returns.index[returns.index > start]
+    if (returns.index <= start).sum() < min_train_days or len(sim_days) < 120:
+        return None
+
+    names = list(prices.columns)
+    h0 = np.asarray(start_holdings, dtype=float)
+    v0 = h0.sum()
+    static_alloc = h0 / v0 * budget
+    h_kompass, h_static, v_market, paid = h0.copy(), h0.copy(), v0, v0
+    alloc = static_alloc.copy()
+    month_count, last_month = 0, None
+    values, rets, log = [], [], []
+
+    for day in sim_days:
+        r = returns.loc[day].to_numpy()
+        day_ret = [float(h_kompass @ r / h_kompass.sum()), float(h_static @ r / h_static.sum()),
+                   float(bench_ret.loc[day])]
+        h_kompass = h_kompass * (1.0 + r)
+        h_static = h_static * (1.0 + r)
+        v_market *= 1.0 + day_ret[2]
+
+        if last_month is None or day.month != last_month:      # erster Börsentag des Monats
+            if month_count % reopt_months == 0:
+                train = returns.loc[:day].iloc[:-1].to_numpy()
+                lo = diluted_weights(h_kompass, budget, horizon)
+                target = target_weights(train, rf, limit_pct, w_max, lo).weights
+                alloc = build_plan(h_kompass, target, budget, horizon, names).monthly.to_numpy()
+                log.append({"Datum": day, **{n: a for n, a in zip(names, alloc)}})
+            h_kompass = h_kompass + alloc
+            h_static = h_static + static_alloc
+            v_market += budget
+            paid += budget
+            month_count += 1
+            last_month = day.month
+
+        values.append([h_kompass.sum(), h_static.sum(), v_market, paid])
+        rets.append(day_ret)
+
+    cols = ["Sparplan-Kompass", "Weiter wie bisher", "Markt"]
+    values_df = pd.DataFrame(values, index=sim_days, columns=cols + ["Eingezahlt"])
+    rets_df = pd.DataFrame(rets, index=sim_days, columns=cols)
+    return values_df, rets_df, pd.DataFrame(log).set_index("Datum")
+
+
+def underwater(rets: pd.DataFrame) -> pd.DataFrame:
+    """Abstand zum bisherigen Höchststand in % (ohne Einzahlungseffekt)."""
+    index = (1.0 + rets).cumprod()
+    return (index / index.cummax() - 1.0) * 100
+
+
+def compare_stats(values: pd.DataFrame, rets: pd.DataFrame, rf: float) -> pd.DataFrame:
+    rows = []
+    paid = float(values["Eingezahlt"].iloc[-1])
+    dd = underwater(rets)
+    for name in rets.columns:
+        daily = rets[name]
+        k = max(1, int(np.ceil(0.05 * len(daily))))
+        years = len(daily) / 252
+        twr = float((1.0 + daily).prod() ** (1 / years) - 1)
+        vol = float(daily.std() * np.sqrt(252))
+        rows.append({"Depot": name, "Endwert €": float(values[name].iloc[-1]),
+                     "Gewinn €": float(values[name].iloc[-1]) - paid,
+                     "Rendite p.a. %": twr * 100, "Schwankung p.a. %": vol * 100,
+                     "Sharpe": (twr - rf) / vol if vol > 0 else 0.0,
+                     "Schrecktag %": float(-daily.nsmallest(k).mean() * 100),
+                     "Größter Einbruch %": float(dd[name].min())})
+    return pd.DataFrame(rows).set_index("Depot")
