@@ -54,7 +54,7 @@ def loss_histogram(pnl_now: np.ndarray, pnl_goal: np.ndarray, cvar_now: float, c
     fig.add_histogram(x=np.clip(pnl_goal, lo, hi), name="Ziel", marker_color=C_GOAL, opacity=0.55,
                       xbins=bins, hovertemplate="%{x} €: %{y} Tage<extra>Ziel</extra>")
     fig.add_vline(x=-limit, line_color=C_BAD, line_width=2,
-                  annotation_text="Schmerzschwelle", annotation_position="top")
+                  annotation_text="Schmerzgrenze", annotation_position="top")
     fig.add_vline(x=-cvar_now, line_dash="dash", line_color="#64748b")
     fig.add_vline(x=-cvar_goal, line_dash="dash", line_color=C_GOAL)
     fig.update_layout(barmode="overlay", bargap=0,
@@ -93,11 +93,11 @@ def risk_path(months: list[int], loss_eur: list[float], limit: float) -> go.Figu
     fig.add_scatter(x=months, y=loss_eur, mode="lines+markers", line=dict(color=C_GOAL, width=3),
                     fill="tozeroy", fillcolor="rgba(37,99,235,.08)",
                     name="Verlust an einem Schrecktag",
-                    hovertemplate="Monat %{x}: %{y:.0f} €<extra></extra>")
+                    hovertemplate="Monat %{x}: %{y:.2f} %<extra></extra>")
     fig.add_hline(y=limit, line_color=C_BAD, line_dash="dot",
-                  annotation_text="Schmerzschwelle", annotation_position="bottom right")
+                  annotation_text="Schmerzgrenze", annotation_position="bottom right")
     lo = min(min(loss_eur), limit) * 0.9
-    fig.update_layout(xaxis_title="Monat", yaxis_title="€ (bezogen auf den heutigen Depotwert)",
+    fig.update_layout(xaxis_title="Monat", yaxis_title="Verlust am Schrecktag in % des Depots",
                       showlegend=False, yaxis_range=[lo, max(loss_eur) * 1.05])
     return _base(fig, 340)
 
@@ -126,7 +126,7 @@ def blind_test_lines(curves: pd.DataFrame) -> go.Figure:
 # --------------------------------------------------------------------------- Marktvergleich
 _COMPARE_STYLE = {
     "Sparplan-Kompass": dict(color=C_GOAL, width=3.5),
-    "Ohne Kompass": dict(color=C_NOW, width=2.2),
+    "Einfach halten": dict(color=C_NOW, width=2.2),
     "Markt": dict(color=C_ALT, width=2.2),
 }
 
@@ -148,7 +148,7 @@ def compare_lines(values: pd.DataFrame, market_label: str,
     fig.add_scatter(x=values.index, y=values["Eingezahlt"], name="Eingezahlt",
                     line=dict(color="#cbd5e1", width=1.5, dash="dot"),
                     hovertemplate="%{y:,.0f} €<extra>Eingezahlt</extra>")
-    for col in ["Markt", "Ohne Kompass", "Sparplan-Kompass"]:
+    for col in ["Markt", "Einfach halten", "Sparplan-Kompass"]:
         label = market_label if col == "Markt" else col
         fig.add_scatter(x=values.index, y=values[col], name=label, line=_COMPARE_STYLE[col],
                         hovertemplate="%{y:,.0f} €<extra>" + label + "</extra>")
@@ -162,7 +162,7 @@ def underwater_lines(dd: pd.DataFrame, market_label: str,
                      crises: dict[str, tuple[str, str]]) -> go.Figure:
     """Abstand zum Höchststand: je flacher die Kurve, desto ruhiger das Depot."""
     fig = go.Figure()
-    for col in ["Markt", "Ohne Kompass", "Sparplan-Kompass"]:
+    for col in ["Markt", "Einfach halten", "Sparplan-Kompass"]:
         label = market_label if col == "Markt" else col
         style = _COMPARE_STYLE[col]
         fig.add_scatter(x=dd.index, y=dd[col], name=label, line=dict(color=style["color"],
@@ -189,18 +189,18 @@ def purchase_log_bar(log: pd.DataFrame) -> go.Figure:
 def crisis_compare_bar(table: pd.DataFrame, market_label: str) -> go.Figure:
     """Größter Einbruch je Krise aus dem Backtest: Kompass, ohne Kompass, Markt."""
     fig = go.Figure()
-    for col in ["Markt", "Ohne Kompass", "Sparplan-Kompass"]:
+    for col in [c for c in ["Markt", "Einfach halten", "Sparplan-Kompass"] if c in table.columns]:
         label = market_label if col == "Markt" else col
         fig.add_bar(x=table["Krise"], y=table[col], name=label,
                     marker_color=_COMPARE_STYLE[col]["color"], marker_cornerradius=6,
                     hovertemplate="%{x}: %{y:.1f} %<extra>" + label + "</extra>")
-    fig.update_layout(barmode="group", yaxis_title="Größter Einbruch in %", xaxis_title=None)
+    fig.update_layout(barmode="group", yaxis_title="Größter Absturz in %", xaxis_title=None)
     return _base(fig, 380)
 
 
 def strategy_scatter(stats: pd.DataFrame) -> go.Figure:
     """Rendite gegen größten Einbruch: oben rechts ist besser."""
-    colors = {"Ohne Kompass": C_NOW, "Markt": C_ALT}
+    colors = {"Einfach halten": C_NOW, "Markt": C_ALT}
     fig = go.Figure()
     for name, row in stats.iterrows():
         is_ref = name in colors or name.startswith("Markt")
@@ -231,16 +231,17 @@ def money_and_calm(values: pd.DataFrame, rets: pd.DataFrame, market_label: str,
     fig.add_scatter(x=values.index, y=values["Eingezahlt"], name="Eingezahlt", row=1, col=1,
                     line=dict(color="#cbd5e1", width=1.4, dash="dot"),
                     hovertemplate="%{y:,.0f} €<extra>Eingezahlt</extra>")
-    fig.add_scatter(x=values.index, y=values["Markt"], name=market_label, row=1, col=1,
-                    line=dict(color=C_ALT, width=1.4), opacity=0.55,
-                    hovertemplate="%{y:,.0f} €<extra>" + market_label + "</extra>")
-    fig.add_scatter(x=values.index, y=values["Ohne Kompass"], name="Ohne Kompass", row=1, col=1,
+    if market_label:
+        fig.add_scatter(x=values.index, y=values["Markt"], name=market_label, row=1, col=1,
+                        line=dict(color=C_ALT, width=1.4), opacity=0.55,
+                        hovertemplate="%{y:,.0f} €<extra>" + market_label + "</extra>")
+    fig.add_scatter(x=values.index, y=values["Einfach halten"], name="Einfach halten", row=1, col=1,
                     line=dict(color=C_NOW, width=2.6),
                     hovertemplate="%{y:,.0f} €<extra>Ohne Kompass</extra>")
     fig.add_scatter(x=values.index, y=values["Sparplan-Kompass"], name="Sparplan-Kompass", row=1, col=1,
                     line=dict(color=C_GOAL, width=3.2),
                     hovertemplate="%{y:,.0f} €<extra>Sparplan-Kompass</extra>")
-    fig.add_scatter(x=dd.index, y=dd["Ohne Kompass"], showlegend=False, row=2, col=1,
+    fig.add_scatter(x=dd.index, y=dd["Einfach halten"], showlegend=False, row=2, col=1,
                     line=dict(color=C_NOW, width=1.6), fill="tozeroy", fillcolor="rgba(148,163,184,.30)",
                     hovertemplate="%{y:.1f} %<extra>Ohne Kompass</extra>")
     fig.add_scatter(x=dd.index, y=dd["Sparplan-Kompass"], showlegend=False, row=2, col=1,
@@ -263,19 +264,19 @@ def money_and_calm(values: pd.DataFrame, rets: pd.DataFrame, market_label: str,
 
 def calm_bars(stats: pd.DataFrame) -> go.Figure:
     """Ruhe-Bilanz: je kürzer der Balken, desto ruhiger. Kompass gegen ohne Kompass."""
-    rows = [("Größter Einbruch", "Größter Einbruch %", "%"),
+    rows = [("Größter Absturz", "Größter Einbruch %", "%"),
             ("Schlechtestes Jahr", "Schlechtestes Jahr %", "%"),
             ("Schwankung pro Jahr", "Schwankung p.a. %", "%"),
             ("Verlust am Schrecktag", "Schrecktag %", "%"),
             ("Längste Durststrecke", "Längste Durststrecke Monate", "Monate")]
     labels = [r[0] for r in rows]
     fig = go.Figure()
-    for name, color in (("Ohne Kompass", C_NOW), ("Sparplan-Kompass", C_GOAL)):
+    for name, color in (("Einfach halten", C_NOW), ("Sparplan-Kompass", C_GOAL)):
         vals = [abs(float(stats.loc[name, col])) for _, col, _ in rows]
         text = [f"{v:.0f} Mon." if unit == "Monate" else f"{v:.1f} %".replace(".", ",")
                 for v, (_, _, unit) in zip(vals, rows)]
         # Balken relativ zu "ohne Kompass" = 100, damit verschiedene Einheiten vergleichbar sind
-        base = [abs(float(stats.loc["Ohne Kompass", col])) or 1.0 for _, col, _ in rows]
+        base = [abs(float(stats.loc["Einfach halten", col])) or 1.0 for _, col, _ in rows]
         rel = [v / b * 100 for v, b in zip(vals, base)]
         fig.add_bar(y=labels, x=rel, orientation="h", name=name, marker_color=color,
                     marker_cornerradius=6, text=text, textposition="outside",

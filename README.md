@@ -11,9 +11,10 @@ auf echten Tageskursen.
 
 - **Dein Depot:** Bestand, Einstand und Kernpositionen je Titel; Bausteine, die zugekauft werden dürfen; 32 ETFs in sechs Gruppen plus beliebige eigene Yahoo-Kürzel (US-Werte in Euro umgerechnet)
 - **Regeln:** Schmerzgrenze (Verlust an einem Schrecktag in % des Depots, 95 %-CVaR), maximale Positionsgröße, „nichts verkaufen“, Umbau-Zeitraum
-- **Strategien:** Sharpe-Fokus (Standard), Rendite-Fokus, Ausgewogen 50/35/15 (Sharpe/CVaR/Varianz) oder eigene Mischung der vier Bausteine
+- **Strategien:** Ausgewogen (Sharpe-Fokus, Standard) oder Extra vorsichtig 50/35/15 (Sharpe/CVaR/Varianz); im Rechenkern zusätzlich Rendite-Fokus und freie Mischung
+- **Nachkaufen in Korrekturen:** Aktien-ETFs unter ihrer 50/100/200-Tage-Linie bekommen bis doppelt so viel Sparrate, Anleihen und Gold nie
 - **Ergebnis:** feste Sparplan-Aufteilung, animierter Weg ins Ziel, Steuervergleich mit sofortigem Umschichten
-- **Beweis:** Walk-Forward-Backtest gegen „ohne Kompass“ und einen Markt-ETF, frühestens ab Auflage des Vergleichs-ETFs; Krisen- und Strategievergleich
+- **Beweis:** Walk-Forward-Backtest gegen „einfach halten“, nur echte Kurse ab Börsenstart, frühestens ab Auflage des MSCI-World-ETFs; Risiko-Bilanz, Krisen- und Strategievergleich
 
 ## Aufbau
 

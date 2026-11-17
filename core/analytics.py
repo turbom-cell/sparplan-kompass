@@ -71,18 +71,52 @@ def curve_stats(curves: pd.DataFrame, rf: float) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("Depot")
 
 
+# --------------------------------------------------------------------------- Nachkauf in Korrekturen
+SMA_WINDOWS = (50, 100, 200)
+DIP_BOOST = (0.25, 0.25, 0.5)   # Aufschlag je unterschrittener Linie: 50er, 100er, 200er
+
+
+def dip_factors(prices: pd.DataFrame, boosts: tuple[float, float, float] = DIP_BOOST) -> pd.DataFrame:
+    """Kauf-Faktor je Tag und Titel: 1 = normal, mehr, wenn der Kurs unter seinen Durchschnitten liegt.
+
+    Berechnet mit dem Schlusskurs des Vortags, damit kein Blick in die Zukunft entsteht.
+    Beispiel mit den Standardwerten: unter allen drei Linien = 1 + 0,25 + 0,25 + 0,5 = 2,0.
+    """
+    f = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
+    for window, boost in zip(SMA_WINDOWS, boosts):
+        sma = prices.rolling(window, min_periods=window).mean()
+        below = (prices < sma).shift(1, fill_value=False)
+        f = f + below.astype(float) * boost
+    return f
+
+
+def apply_dip(alloc: np.ndarray, factors: np.ndarray, mask: np.ndarray, budget: float) -> np.ndarray:
+    """Verteilt dieselbe Sparrate um: Positionen in der Korrektur bekommen mehr, die anderen weniger.
+
+    Nur Positionen mit `mask` (Aktien-ETFs, keine Anleihen, kein Gold) und nur solche, die laut
+    Plan ohnehin Geld bekommen. Die Summe bleibt genau die Sparrate.
+    """
+    alloc = np.asarray(alloc, dtype=float)
+    f = np.where(np.asarray(mask, dtype=bool) & (alloc > 0), factors, 1.0)
+    adj = alloc * f
+    return adj * (budget / adj.sum()) if adj.sum() > 0 else alloc
+
+
 # --------------------------------------------------------------------------- Marktvergleich
 def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndarray, budget: float,
                  years: int, rf: float, limit_pct: float, w_max: float, horizon: int,
                  reopt_months: int = 6, min_train_days: int = 500,
                  mix: dict[str, float] | None = None, core: np.ndarray | None = None,
-                 not_before: pd.Timestamp | None = None):
+                 not_before: pd.Timestamp | None = None,
+                 dip: tuple[float, float, float] | None = None, dip_mask: np.ndarray | None = None):
     """Spielt die letzten `years` Jahre mit echten Kursen nach, Monat für Monat.
 
     Drei Anleger starten mit demselben Geld und zahlen dieselbe Sparrate ein:
       - "Sparplan-Kompass": rechnet alle `reopt_months` Monate neu, nur mit Kursen,
         die es an dem Tag schon gab, und verteilt die Sparrate entsprechend. Verkauft nie.
-      - "Ohne Kompass": spart weiter wie bisher, also Sparrate im Verhältnis des
+        Mit `dip` bekommen Aktien-ETFs (`dip_mask`) unter ihren 50/100/200-Tage-Linien mehr
+        von der Sparrate, die anderen entsprechend weniger.
+      - "Einfach halten": spart weiter wie bisher, also Sparrate im Verhältnis des
         heutigen Depots. Das Klumpenrisiko bleibt.
       - "Markt": alles in den Vergleichs-ETF.
     Rückgabe: (Depotwerte in €, Tagesrenditen ohne Einzahlungseffekt, Kauf-Protokoll) oder None.
@@ -102,6 +136,8 @@ def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndar
         return None
 
     names = list(prices.columns)
+    factors = dip_factors(prices, dip) if dip is not None else None
+    mask = np.ones(len(names), bool) if dip_mask is None else np.asarray(dip_mask, bool)
     h0 = np.asarray(start_holdings, dtype=float)
     v0 = h0.sum()
     static_alloc = h0 / v0 * budget
@@ -125,7 +161,8 @@ def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndar
                 target = mix_weights(train, rf, limit_pct, w_max, lo, mix).weights
                 alloc = build_plan(h_kompass, target, budget, horizon, names).monthly.to_numpy()
                 log.append({"Datum": day, **{n: a for n, a in zip(names, alloc)}})
-            h_kompass = h_kompass + alloc
+            buy = alloc if factors is None else apply_dip(alloc, factors.loc[day].to_numpy(), mask, budget)
+            h_kompass = h_kompass + buy
             h_static = h_static + static_alloc
             v_market += budget
             paid += budget
@@ -135,7 +172,7 @@ def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndar
         values.append([h_kompass.sum(), h_static.sum(), v_market, paid])
         rets.append(day_ret)
 
-    cols = ["Sparplan-Kompass", "Ohne Kompass", "Markt"]
+    cols = ["Sparplan-Kompass", "Einfach halten", "Markt"]
     values_df = pd.DataFrame(values, index=sim_days, columns=cols + ["Eingezahlt"])
     rets_df = pd.DataFrame(rets, index=sim_days, columns=cols)
     return values_df, rets_df, pd.DataFrame(log).set_index("Datum")

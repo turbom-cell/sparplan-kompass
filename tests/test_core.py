@@ -127,7 +127,7 @@ def test_walk_forward_is_fair_and_never_sells():
     assert (log.values >= -1e-9).all()
     assert np.allclose(log.sum(axis=1), 500.0)
     stats = compare_stats(values, rets, 0.025)
-    assert set(stats.index) == {"Sparplan-Kompass", "Ohne Kompass", "Markt"}
+    assert set(stats.index) == {"Sparplan-Kompass", "Einfach halten", "Markt"}
     assert (underwater(rets).values <= 1e-9).all()
     # zu wenig Historie -> kein Ergebnis statt falscher Zahlen
     assert walk_forward(prices.tail(400), bench, h, 500.0, 3, 0.025, 0.02, 0.4, 12) is None
@@ -199,3 +199,18 @@ def test_walk_forward_starts_not_before_benchmark():
     out = walk_forward(prices, bench_data.prices["EUNL.DE"], np.array([5000.0, 0, 0]), 500.0, 25,
                        0.025, 0.03, 0.6, 36, not_before=since)
     assert out is not None and out[0].index[0] > since
+
+
+def test_dip_buying_redistributes_same_budget():
+    from core.analytics import apply_dip, dip_factors
+    alloc = np.array([200.0, 200.0, 100.0])                # Aktie, Aktie, Anleihe
+    mask = np.array([True, True, False])
+    out = apply_dip(alloc, np.array([2.0, 1.0, 2.0]), mask, 500.0)
+    assert out.sum() == pytest.approx(500.0)                # gleiche Sparrate
+    assert out[0] > 200.0 and out[1] < 200.0 and out[2] < 100.0   # Anleihe bekommt keinen Aufschlag
+    assert apply_dip(alloc, np.ones(3), mask, 500.0) == pytest.approx(alloc)
+    idx = pd.date_range("2020-01-01", periods=300, freq="B")
+    falling = pd.DataFrame({"A": np.linspace(200, 100, 300)}, index=idx)
+    f = dip_factors(falling)
+    assert f["A"].iloc[-1] == pytest.approx(2.0)            # unter allen drei Linien
+    assert f["A"].iloc[30] == pytest.approx(1.0)            # Linien noch nicht berechenbar
