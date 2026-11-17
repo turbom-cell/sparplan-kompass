@@ -48,13 +48,18 @@ def _cvar_grad(weights: np.ndarray, returns: np.ndarray, alpha: float = ALPHA) -
 
 
 def expected_returns(returns: np.ndarray) -> np.ndarray:
-    """Jahresrenditen, zur Hälfte auf den Durchschnitt aller Positionen gezogen.
+    """Erwartete Jahresrenditen: halb Historie, halb "jede Anlage wird für ihr Risiko gleich bezahlt".
 
-    Historische Mittelwerte sind sehr unsicher; die Dämpfung macht die angezeigten
-    Rendite- und Sharpe-Werte vorsichtiger. Die Reihenfolge der Positionen ändert sie nicht.
+    Historische Mittelwerte sind sehr unsicher; allein genutzt jagt die Optimierung den
+    Gewinnern der Vergangenheit hinterher. Die zweite Hälfte ist eine Ausgangsannahme mit
+    gleicher Sharpe Ratio für alle Positionen: Rendite proportional zur Schwankung. So bleiben
+    Aktien ertragreicher als Anleihen, aber kein Baustein wird nur wegen seiner Vergangenheit
+    bevorzugt. (Im Backtest mit echten Kursen besser als ein Ausgleich zum einfachen Durchschnitt.)
     """
     mu = returns.mean(axis=0) * TRADING_DAYS
-    return (1.0 - MEAN_SHRINK) * mu + MEAN_SHRINK * mu.mean()
+    vol = returns.std(axis=0) * np.sqrt(TRADING_DAYS)
+    prior = vol * (mu.sum() / vol.sum()) if vol.sum() > 0 else np.full_like(mu, mu.mean())
+    return (1.0 - MEAN_SHRINK) * mu + MEAN_SHRINK * prior
 
 
 def covariance(returns: np.ndarray) -> np.ndarray:

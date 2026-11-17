@@ -188,3 +188,14 @@ def test_custom_ticker_names():
     from core.data_service import currency_of, display_name, group_of
     assert currency_of("AAPL") == "USD" and currency_of("SAP.DE") == "EUR"
     assert display_name("AAPL") == "AAPL" and group_of("AAPL") == "Eigene Titel"
+
+
+def test_walk_forward_starts_not_before_benchmark():
+    from core.analytics import walk_forward
+    prices = load_prices(["SXRV.DE", "EUNH.DE", "4GLD.DE"], 2000, allow_live=False).prices
+    bench_data = load_prices(["EUNL.DE"], 2000, allow_live=False)
+    since = bench_data.etf_start["EUNL.DE"]
+    assert since.year == 2009                                    # MSCI-World-ETF erst seit 2009
+    out = walk_forward(prices, bench_data.prices["EUNL.DE"], np.array([5000.0, 0, 0]), 500.0, 25,
+                       0.025, 0.03, 0.6, 36, not_before=since)
+    assert out is not None and out[0].index[0] > since

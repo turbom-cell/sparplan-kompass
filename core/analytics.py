@@ -75,7 +75,8 @@ def curve_stats(curves: pd.DataFrame, rf: float) -> pd.DataFrame:
 def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndarray, budget: float,
                  years: int, rf: float, limit_pct: float, w_max: float, horizon: int,
                  reopt_months: int = 6, min_train_days: int = 500,
-                 mix: dict[str, float] | None = None, core: np.ndarray | None = None):
+                 mix: dict[str, float] | None = None, core: np.ndarray | None = None,
+                 not_before: pd.Timestamp | None = None):
     """Spielt die letzten `years` Jahre mit echten Kursen nach, Monat für Monat.
 
     Drei Anleger starten mit demselben Geld und zahlen dieselbe Sparrate ein:
@@ -94,6 +95,8 @@ def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndar
     returns = prices.pct_change().dropna()
     bench_ret = bench.pct_change().dropna()
     start = returns.index[-1] - pd.DateOffset(years=years)
+    if not_before is not None:          # z. B. Auflage des Vergleichs-ETFs: nur echte Kurse vergleichen
+        start = max(start, pd.Timestamp(not_before))
     sim_days = returns.index[returns.index > start]
     if (returns.index <= start).sum() < min_train_days or len(sim_days) < 120:
         return None

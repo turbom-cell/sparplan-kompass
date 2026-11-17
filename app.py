@@ -41,15 +41,14 @@ DIVERSIFIERS = ["4GLD.DE", "EUNH.DE"]   # im Backtest die wirksamsten Risikopuff
 PRESETS: dict[str, tuple[list[tuple[str, int, int, bool]], list[str]]] = {
     "Tech-lastig (Klumpenrisiko)": (
         [("SXRV.DE", 6000, 3600, True), ("SXR8.DE", 3000, 2200, False),
-         ("EUNL.DE", 2000, 1600, False), ("IS3S.DE", 500, 450, False),
-         ("4GLD.DE", 500, 400, False)], DIVERSIFIERS),
-    "Welt-Depot mit viel DAX": (
+         ("EUNL.DE", 2500, 2050, False), ("4GLD.DE", 500, 400, False)], DIVERSIFIERS),
+    "Welt-Depot mit viel DAX (Heimatmarkt-Klumpen)": (
         [("EUNL.DE", 5000, 3800, True), ("EXS1.DE", 4500, 3300, False),
          ("IS3N.DE", 1500, 1400, False)], DIVERSIFIERS),
     "Langjähriger Sparer (60.000 €)": (
         [("SXRV.DE", 26000, 9000, True), ("SXR8.DE", 18000, 9500, False),
          ("EUNL.DE", 12000, 8000, False), ("XDWT.DE", 4000, 2000, False)], DIVERSIFIERS),
-    "Berufseinsteiger (ein ETF)": ([("SXR8.DE", 2500, 2100, True)], DIVERSIFIERS),
+    "Berufseinsteiger (ein ETF)": ([("SXR8.DE", 2500, 2100, False)], DIVERSIFIERS),
     "Leeres Depot zum Selberbauen": ([("EUNL.DE", 1000, 1000, True)], []),
 }
 LABEL = {t: f"{name} · {t}" for t, (name, _, _) in CATALOG.items()}
@@ -78,8 +77,8 @@ def num(x: float, digits: int = 1, sign: bool = False) -> str:
 
 # --------------------------------------------------------------------------- Rechnen (gecacht)
 @st.cache_data(ttl=3600, show_spinner="Lade Kurse …")
-def cached_prices(tickers: tuple[str, ...], start_year: int, allow_live: bool):
-    data = load_prices(list(tickers), start_year, allow_live)
+def cached_prices(tickers: tuple[str, ...], start_year: int, allow_live: bool, use_proxies: bool):
+    data = load_prices(list(tickers), start_year, allow_live, use_proxies)
     return data.prices, data.source, data.missing, data.etf_start
 
 
@@ -100,9 +99,11 @@ def cached_earliest(returns: pd.DataFrame, holdings: tuple[float, ...], budget: 
 @st.cache_data(show_spinner="Spiele die Jahre mit echten Kursen nach …")
 def cached_walk_forward(prices: pd.DataFrame, bench: pd.Series, holdings: tuple[float, ...],
                         budget: float, years: int, rf: float, limit: float, w_max: float,
-                        horizon: int, mix: tuple, core: tuple[bool, ...]):
+                        horizon: int, mix: tuple, core: tuple[bool, ...],
+                        not_before: pd.Timestamp | None = None):
     return analytics.walk_forward(prices, bench, np.array(holdings), budget, years, rf, limit,
-                                  w_max, horizon, mix=dict(mix), core=np.array(core))
+                                  w_max, horizon, mix=dict(mix), core=np.array(core),
+                                  not_before=not_before)
 
 
 hero_slot = st.container()
@@ -156,7 +157,12 @@ with tab_depot:
             help="Gold und Euro-Staatsanleihen waren im Backtest die wirksamsten Risikopuffer. "
                  "Mehr Bausteine heißt nicht automatisch besser.")
         with st.expander("Erweiterte Annahmen"):
-            start_year = st.slider("Kurse ab Jahr", 2000, 2021, 2000)
+            use_proxies = st.toggle(
+                "Ersatz-Reihen vor ETF-Auflage nutzen", value=False,
+                help="Aus: Jeder Titel zählt erst ab seinem echten Börsenstart (Standard). "
+                     "An: Davor steht ein Index oder älterer Fonds derselben Anlageklasse, "
+                     "damit reicht die Historie bis 2000.")
+            start_year = st.slider("Kurse frühestens ab Jahr", 2000, 2021, 2000)
             rf = st.slider("Risikofreier Zins in %", 0.0, 5.0, 2.5, 0.25) / 100
             allowance = float(st.number_input("Freier Sparerpauschbetrag in €", 0, 2000, 1000, 100))
             fee = float(st.number_input("Ordergebühr je Verkauf in €", 0.0, 20.0, 1.0, 0.5))
@@ -169,7 +175,8 @@ if depot.empty or depot["Bestand €"].sum() <= 0:
     st.stop()
 
 universe = list(dict.fromkeys(held + [ticker_of(x) for x in extras_labels]))
-prices, source, missing, etf_start = cached_prices(tuple(universe), start_year, allow_live)
+prices, source, missing, etf_start = cached_prices(tuple(universe), start_year, allow_live,
+                                                   use_proxies)
 if missing:
     st.warning("Keine Kursdaten für: " + ", ".join(display_name(t) for t in missing) + ".")
 if prices.empty:
@@ -254,17 +261,27 @@ with tab_proof:
                   "Kompass rechnet alle 6 Monate neu, nutzt nur Kurse, die es damals schon gab, "
                   "und verkauft nie.")
     p1, p2 = st.columns([3, 2])
-    with p1:
-        avail = (prices.index[-1] - prices.index[0]).days / 365.25
-        options = [y for y in (3, 5, 10, 20) if y <= avail - 2] or [3]
-        sim_years = st.radio("Zeitraum", options, index=len(options) - 1, horizontal=True,
-                             format_func=lambda y: f"letzte {y} Jahre")
     with p2:
         bench_name = st.selectbox("Markt-Vergleich (alles in einen ETF)", list(BENCHMARKS))
-bench_prices, _, bench_missing, _ = cached_prices((BENCHMARKS[bench_name],), start_year, allow_live)
+    bench_prices, _, bench_missing, bench_start = cached_prices((BENCHMARKS[bench_name],), 2000,
+                                                                allow_live, False)
+    # Verglichen wird nur, solange es den Vergleichs-ETF wirklich gab (keine Ersatz-Reihe).
+    bench_since = bench_start.get(BENCHMARKS[bench_name], prices.index[0])
+    first_sim = max(bench_since, prices.index[0] + pd.Timedelta(days=730))
+    avail = (prices.index[-1] - first_sim).days / 365.25
+    with p1:
+        options = [y for y in (3, 5, 10) if y < avail - 0.5] + [int(np.ceil(avail))]
+        sim_years = st.radio(
+            "Zeitraum", options, index=len(options) - 1, horizontal=True,
+            format_func=lambda y: (f"letzte {y} Jahre" if y < avail - 0.5
+                                   else f"maximal: seit {first_sim:%m/%Y}"))
+    st.caption(f"Der Vergleich beginnt frühestens mit der Auflage des {bench_name}-ETFs "
+               f"({bench_since:%m/%Y}), damit nur mit echten Kursen des Markt-ETFs verglichen wird. "
+               "Der Kompass lernt dabei nur aus Kursen, die es am jeweiligen Stichtag schon gab.")
+period = (f"letzte {sim_years} Jahre" if sim_years < avail - 0.5 else f"seit {first_sim:%m/%Y}")
 sim = None if bench_missing or bench_prices.empty else cached_walk_forward(
     prices, bench_prices.iloc[:, 0], tuple(h), budget, sim_years, rf, limit, w_max, months, mix_key,
-    tuple(core))
+    tuple(core), first_sim)
 if sim is not None:
     values, rets, _ = sim
     stats = analytics.compare_stats(values, rets, rf)
@@ -277,12 +294,16 @@ with hero_slot:
     proofs = []
     if sim is not None:
         proofs.append((f"{num(K['Sharpe'], 2)} statt {num(O['Sharpe'], 2)}",
-                       f"Sharpe Ratio mit statt ohne Kompass, letzte {sim_years} Jahre "
+                       f"Sharpe Ratio mit statt ohne Kompass, {period} "
                        f"({bench_name}: {num(M['Sharpe'], 2)})"))
         proofs.append((f"{num(K['Größter Einbruch %'], 0)} % statt {num(O['Größter Einbruch %'], 0)} %",
                        "größter Einbruch mit statt ohne Kompass"))
-    proofs.append((eur(cost.total), "Steuern und Gebühren, die du dir gegenüber Umschichten "
-                                    "durch Verkauf sparst"))
+    if cost.total >= 100 or sim is None or not len(crises):
+        proofs.append((eur(cost.total), "Steuern und Gebühren, die du dir gegenüber Umschichten "
+                                        "durch Verkauf sparst"))
+    else:
+        proofs.append((f"{crisis_wins} von {len(crises)}",
+                       "Krisen mit kleinerem Verlust als ohne Kompass"))
     theme.hero(
         "Mehr Rendite pro Risiko.<br>Keine Steuer beim Umbau.",
         "Der <b>Sparplan-Kompass</b> baut dein ETF-Depot nur über die Aufteilung deiner Sparrate "
@@ -305,8 +326,11 @@ with tab_home:
          "text": f"„Volatilität {pct(now.vol * 100, 0)}“ ist abstrakt. Konkret heißt es: An einem "
                  f"schlechten Börsentag verlierst du im Schnitt <b>{eur(now.cvar * V)}</b>."},
         {"icon": "💸", "title": "Umschichten kostet Geld",
-         "text": f"Wer verkauft, zahlt 26,375 % Steuer auf den Gewinn plus Gebühren. Bei deinem "
-                 f"Depot wären das <b>{eur(cost.total)}</b>."},
+         "text": ("Wer verkauft, zahlt 26,375 % Steuer auf den Gewinn plus Gebühren. Bei deinem "
+                  f"Depot wären das <b>{eur(cost.total)}</b>." if cost.total >= 100 else
+                  "Wer verkauft, zahlt 26,375 % Steuer auf den Gewinn plus Gebühren. Bei deinem Depot "
+                  "fängt der Freibetrag das noch ab; bei großen Depots mit hohen Gewinnen sind es "
+                  "schnell Tausende Euro (Vorlage „Langjähriger Sparer“).")},
     ])
     theme.section("Der Unterschied", "Drei Wege mit deinem Depot – mit deinen Zahlen")
     dd_k = f"{num(K['Größter Einbruch %'])} %" if sim is not None else "–"
@@ -319,10 +343,10 @@ with tab_home:
           f'<span class="no">{eur(cost.total)}</span>', '<span class="yes">0 €</span>'],
          ["Verlust an einem Schrecktag", eur(now.cvar * V), f"{eur(free.cvar * V)} (sofort)",
           f"{eur(goal.cvar * V)} (nach {months} Monaten)"],
-         [f"Sharpe Ratio, letzte {sim_years} Jahre",
+         [f"Sharpe Ratio, {period}",
           num(O["Sharpe"], 2) if sim is not None else "–", "nicht nachgerechnet",
           f'<b>{num(K["Sharpe"], 2)}</b>' if sim is not None else "–"],
-         [f"Größter Einbruch, letzte {sim_years} Jahre", dd_o, "nicht nachgerechnet", dd_k],
+         [f"Größter Einbruch, {period}", dd_o, "nicht nachgerechnet", dd_k],
          ["Was du tun musst", "nichts", "Verkaufs- und Kauforders", "Sparplan einmal neu einstellen"]],
         highlight=2)
     theme.section("Die Belege", "Was wir behaupten – und wo man es nachprüfen kann")
@@ -333,13 +357,13 @@ with tab_home:
              "title": "Mehr Rendite pro Risiko",
              "text": f"Sharpe Ratio mit und ohne Kompass, {bench_name}: {num(M['Sharpe'], 2)}. "
                      f"Rendite p.a. {num(K['Rendite p.a. %'])} % gegen {num(O['Rendite p.a. %'])} %.",
-             "src": f"Tageskurse, letzte {sim_years} Jahre, risikofreier Zins {pct(rf * 100, 2)}"},
+             "src": f"Tageskurse, {period}, risikofreier Zins {pct(rf * 100, 2)}"},
             {"num": f"{num(K['Größter Einbruch %'] - O['Größter Einbruch %'], 1, True)} Punkte",
              "title": "Kleinerer Absturz",
              "text": f"Größter Einbruch {num(K['Größter Einbruch %'])} % statt "
                      f"{num(O['Größter Einbruch %'])} % ohne Kompass und "
                      f"{num(M['Größter Einbruch %'])} % im {bench_name}.",
-             "src": f"Tageskurse, letzte {sim_years} Jahre, Tab „Beweis“"},
+             "src": f"Tageskurse, {period}, Tab „Beweis“"},
             {"num": f"{num(K['Längste Durststrecke Monate'], 0)} statt {num(O['Längste Durststrecke Monate'], 0)} Monate",
              "title": "Kürzere Durststrecke",
              "text": "So lange lag das Depot höchstens unter seinem alten Höchststand. Kürzer "
@@ -466,7 +490,7 @@ with tab_proof:
                 smix = mix if smix is None else smix
                 skey = tuple(sorted((k, float(v)) for k, v in smix.items()))
                 out = cached_walk_forward(prices, bench_prices.iloc[:, 0], tuple(h), budget, sim_years,
-                                          rf, limit, w_max, months, skey, tuple(core))
+                                          rf, limit, w_max, months, skey, tuple(core), first_sim)
                 s = analytics.compare_stats(out[0], out[1], rf).loc["Sparplan-Kompass"]
                 rows.append(s.rename(sname))
             comp = pd.DataFrame(rows)
@@ -479,15 +503,16 @@ with tab_proof:
                                         for c in comp.columns})
             st.caption("Oben rechts ist besser: mehr Rendite bei kleinerem Einbruch.")
 
-    proxied = [t for t in tickers if etf_start[t] > prices.index[0] + pd.Timedelta(days=10)]
-    if proxied:
-        with st.expander(f"Datenquellen: Kurse ab {prices.index[0]:%m/%Y}, bei {len(proxied)} "
-                         "Bausteinen vor ETF-Auflage mit Ersatz-Reihe"):
-            st.dataframe(pd.DataFrame({
-                "Baustein": [display_name(t) for t in proxied],
-                "Echter ETF-Kurs ab": [f"{etf_start[t]:%m/%Y}" for t in proxied],
-                "Davor verwendet": [PROXIES[t][2] if t in PROXIES else "–" for t in proxied],
-            }), hide_index=True, width="stretch")
-            st.caption("Die ETFs gibt es erst seit 2008 bis 2019. Davor steht eine Ersatz-Reihe "
-                       "derselben Anlageklasse in Euro. Offensichtliche Datenfehler von Yahoo "
-                       "Finance werden herausgefiltert.")
+    limiting = max(tickers, key=lambda t: etf_start[t])
+    with st.expander(f"Datenquellen: gemeinsame Kurshistorie ab {prices.index[0]:%m/%Y}"
+                     + ("" if use_proxies else f", begrenzt durch {display_name(limiting)}")):
+        st.dataframe(pd.DataFrame({
+            "Titel": [display_name(t) for t in tickers],
+            "Echter Kurs ab": [f"{etf_start[t]:%m/%Y}" for t in tickers],
+            "Davor": [(PROXIES[t][2] if t in PROXIES and use_proxies and etf_start[t] > prices.index[0]
+                       else "–") for t in tickers],
+        }), hide_index=True, width="stretch")
+        st.caption("Standard: Jeder Titel zählt erst ab seinem echten Börsenstart; die gemeinsame "
+                   "Historie beginnt deshalb mit dem jüngsten Titel. Unter „Erweiterte Annahmen“ "
+                   "lassen sich Ersatz-Reihen bis 2000 zuschalten. Offensichtliche Datenfehler von "
+                   "Yahoo Finance werden herausgefiltert.")

@@ -28,11 +28,19 @@ print(f"ETF-Kurse: {len(etfs)} Tage, {etfs.shape[1]} Ticker -> {SAMPLE_FILE.name
 # 2) Ersatz-Reihen in Euro
 symbols = sorted({sym for sym, _, _ in PROXIES.values()})
 raw = _download(symbols, START)
+for sym in symbols:                      # Yahoo liefert bei großen Abfragen manchmal einzelne nicht
+    if sym not in raw.columns or raw[sym].dropna().empty:
+        retry = _download([sym], START)
+        if not retry.empty:
+            raw[sym] = retry.iloc[:, 0]
 fx = pd.read_csv(FRED_EURUSD, index_col=0, parse_dates=True).iloc[:, 0]
 fx = pd.to_numeric(fx, errors="coerce").dropna()          # US-Dollar je Euro
 
 out = {}
 for ticker, (symbol, kind, _) in PROXIES.items():
+    if symbol not in raw.columns or raw[symbol].dropna().empty:
+        print(f"  {ticker:8s} <- {symbol}: keine Daten, ohne Ersatz-Reihe")
+        continue
     series = raw[symbol].dropna()
     if kind in ("usd", "usd_price"):
         series = (series / fx.reindex(series.index).ffill().bfill()).dropna()

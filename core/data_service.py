@@ -31,9 +31,18 @@ CATALOG: dict[str, tuple[str, int, str]] = {
     "EXW1.DE": ("EURO STOXX 50", 30, "Aktien Regionen"),
     "EXS1.DE": ("DAX", 30, "Aktien Regionen"),
     "IS3N.DE": ("Emerging Markets", 30, "Aktien Regionen"),
+    "EUNN.DE": ("Japan", 30, "Aktien Regionen"),
+    "SXR1.DE": ("Pazifik ohne Japan", 30, "Aktien Regionen"),
     "XDWT.DE": ("MSCI World IT", 30, "Branchen & Faktoren"),
     "XDWH.DE": ("MSCI World Gesundheit", 30, "Branchen & Faktoren"),
     "XDWS.DE": ("MSCI World Basiskonsum", 30, "Branchen & Faktoren"),
+    "XDWU.DE": ("MSCI World Versorger", 30, "Branchen & Faktoren"),
+    "XDWI.DE": ("MSCI World Industrie", 30, "Branchen & Faktoren"),
+    "XDWF.DE": ("MSCI World Finanzen", 30, "Branchen & Faktoren"),
+    "XDW0.DE": ("MSCI World Energie", 30, "Branchen & Faktoren"),
+    "XDWM.DE": ("MSCI World Grundstoffe", 30, "Branchen & Faktoren"),
+    "XDWC.DE": ("MSCI World Zyklischer Konsum", 30, "Branchen & Faktoren"),
+    "IQQ0.DE": ("MSCI World Minimum Volatility", 30, "Branchen & Faktoren"),
     "IS3S.DE": ("MSCI World Value", 30, "Branchen & Faktoren"),
     "IS3Q.DE": ("MSCI World Quality", 30, "Branchen & Faktoren"),
     "IQQ6.DE": ("Immobilien (REITs) Welt", 30, "Immobilien & Rohstoffe"),
@@ -42,6 +51,8 @@ CATALOG: dict[str, tuple[str, int, str]] = {
     "EUNH.DE": ("Euro-Staatsanleihen", 0, "Anleihen & Geldmarkt"),
     "EUN5.DE": ("Euro-Unternehmensanleihen", 0, "Anleihen & Geldmarkt"),
     "IBCI.DE": ("Euro-Inflationsanleihen", 0, "Anleihen & Geldmarkt"),
+    "XUTD.DE": ("US-Staatsanleihen", 0, "Anleihen & Geldmarkt"),
+    "IUS7.DE": ("Schwellenländer-Anleihen", 0, "Anleihen & Geldmarkt"),
     "XEON.DE": ("Geldmarkt Euro", 0, "Anleihen & Geldmarkt"),
 }
 GROUPS = list(dict.fromkeys(g for _, _, g in CATALOG.values()))
@@ -72,6 +83,16 @@ PROXIES: dict[str, tuple[str, str, str]] = {
     "EUN5.DE": ("DODIX", "usd_hedged", "US-Anleihefonds mit Unternehmensanleihen, ohne Währungseffekt (Näherung)"),
     "IBCI.DE": ("VIPSX", "usd_hedged", "US-Inflationsanleihen, ohne Währungseffekt (Näherung, ab 06/2000)"),
     "XEON.DE": ("VFISX", "usd_hedged", "Kurzlaufende US-Staatsanleihen, ohne Währungseffekt (Näherung)"),
+    "EUNN.DE": ("EWJ", "usd", "iShares MSCI Japan (USA)"),
+    "SXR1.DE": ("EPP", "usd", "iShares MSCI Pacific ex Japan (USA, ab 10/2001)"),
+    "XDWU.DE": ("FSUTX", "usd", "US-Versorgerfonds (Näherung)"),
+    "XDWI.DE": ("FCYIX", "usd", "US-Industriefonds (Näherung)"),
+    "XDWF.DE": ("FIDSX", "usd", "US-Finanzfonds (Näherung)"),
+    "XDW0.DE": ("FSENX", "usd", "US-Energiefonds (Näherung)"),
+    "XDWM.DE": ("FSDPX", "usd", "US-Grundstofffonds (Näherung)"),
+    "XDWC.DE": ("FSCPX", "usd", "US-Konsumfonds (Näherung)"),
+    "XUTD.DE": ("VFITX", "usd", "US-Staatsanleihen mittlerer Laufzeit, in Euro"),
+    "IUS7.DE": ("PREMX", "usd", "Schwellenländer-Anleihefonds (USA)"),
 }
 PRICE_INDEX_DIVIDEND = 0.018
 
@@ -184,18 +205,22 @@ def clean_prices(raw: pd.DataFrame, tickers: list[str]) -> tuple[pd.DataFrame, l
     return prices, missing
 
 
-def _finish(raw: pd.DataFrame, tickers: list[str], start: pd.Timestamp, source: str) -> PriceData:
-    extended, etf_start = extend_with_proxies(raw, _proxy_history())
+def _finish(raw: pd.DataFrame, tickers: list[str], start: pd.Timestamp, source: str,
+            use_proxies: bool = True) -> PriceData:
+    proxies = _proxy_history() if use_proxies else pd.DataFrame()
+    extended, etf_start = extend_with_proxies(raw, proxies)
     prices, missing = clean_prices(extended, tickers)
     if not prices.empty:
         prices = prices.loc[max(start, EARLIEST):]
     return PriceData(prices, source, missing, {t: etf_start[t] for t in prices.columns})
 
 
-def load_prices(tickers: list[str], start_year: int = 2000, allow_live: bool = True) -> PriceData:
+def load_prices(tickers: list[str], start_year: int = 2000, allow_live: bool = True,
+                use_proxies: bool = True) -> PriceData:
     """Lädt Kurse ab `start_year`: live von Yahoo Finance, sonst aus dem Snapshot.
 
-    Reicht ein ETF nicht so weit zurück, wird seine Ersatz-Reihe davorgesetzt.
+    Mit `use_proxies` wird vor einen ETF, der nicht so weit zurückreicht, seine Ersatz-Reihe
+    gesetzt. Ohne zählt jeder Titel erst ab seinem echten Start.
     """
     tickers = list(dict.fromkeys(tickers))
     start = pd.Timestamp(year=int(start_year), month=1, day=1)
@@ -205,7 +230,8 @@ def load_prices(tickers: list[str], start_year: int = 2000, allow_live: bool = T
     if allow_live and known:
         try:
             raw = _download(known, pd.Timestamp("2005-01-01"))
-            data = _finish(raw.join(extra, how="outer") if not extra.empty else raw, tickers, start, "live")
+            data = _finish(raw.join(extra, how="outer") if not extra.empty else raw, tickers, start, "live",
+                           use_proxies)
             if not data.prices.empty and not set(data.missing) & set(known):
                 return data
         except Exception:
@@ -213,7 +239,7 @@ def load_prices(tickers: list[str], start_year: int = 2000, allow_live: bool = T
     snap = _snapshot(known)
     if not extra.empty:
         snap = snap.join(extra, how="outer") if not snap.empty else extra
-    return _finish(snap, tickers, start, "snapshot" if known else "live")
+    return _finish(snap, tickers, start, "snapshot" if known else "live", use_proxies)
 
 
 EUR_SUFFIXES = (".DE", ".F", ".AS", ".PA", ".MI", ".MC", ".VI", ".BR", ".HE", ".IR", ".LS")
