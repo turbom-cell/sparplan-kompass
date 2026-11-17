@@ -126,7 +126,7 @@ def blind_test_lines(curves: pd.DataFrame) -> go.Figure:
 # --------------------------------------------------------------------------- Marktvergleich
 _COMPARE_STYLE = {
     "Sparplan-Kompass": dict(color=C_GOAL, width=3.5),
-    "Weiter wie bisher": dict(color=C_NOW, width=2.2),
+    "Ohne Kompass": dict(color=C_NOW, width=2.2),
     "Markt": dict(color=C_ALT, width=2.2),
 }
 
@@ -148,7 +148,7 @@ def compare_lines(values: pd.DataFrame, market_label: str,
     fig.add_scatter(x=values.index, y=values["Eingezahlt"], name="Eingezahlt",
                     line=dict(color="#cbd5e1", width=1.5, dash="dot"),
                     hovertemplate="%{y:,.0f} €<extra>Eingezahlt</extra>")
-    for col in ["Markt", "Weiter wie bisher", "Sparplan-Kompass"]:
+    for col in ["Markt", "Ohne Kompass", "Sparplan-Kompass"]:
         label = market_label if col == "Markt" else col
         fig.add_scatter(x=values.index, y=values[col], name=label, line=_COMPARE_STYLE[col],
                         hovertemplate="%{y:,.0f} €<extra>" + label + "</extra>")
@@ -162,7 +162,7 @@ def underwater_lines(dd: pd.DataFrame, market_label: str,
                      crises: dict[str, tuple[str, str]]) -> go.Figure:
     """Abstand zum Höchststand: je flacher die Kurve, desto ruhiger das Depot."""
     fig = go.Figure()
-    for col in ["Markt", "Weiter wie bisher", "Sparplan-Kompass"]:
+    for col in ["Markt", "Ohne Kompass", "Sparplan-Kompass"]:
         label = market_label if col == "Markt" else col
         style = _COMPARE_STYLE[col]
         fig.add_scatter(x=dd.index, y=dd[col], name=label, line=dict(color=style["color"],
@@ -184,3 +184,34 @@ def purchase_log_bar(log: pd.DataFrame) -> go.Figure:
     fig.update_layout(yaxis_title="Sparrate in € je Monat", xaxis_title="Neuberechnung am",
                       barmode="stack")
     return _base(fig, 340)
+
+
+def crisis_compare_bar(table: pd.DataFrame, market_label: str) -> go.Figure:
+    """Größter Einbruch je Krise aus dem Backtest: Kompass, ohne Kompass, Markt."""
+    fig = go.Figure()
+    for col in ["Markt", "Ohne Kompass", "Sparplan-Kompass"]:
+        label = market_label if col == "Markt" else col
+        fig.add_bar(x=table["Krise"], y=table[col], name=label,
+                    marker_color=_COMPARE_STYLE[col]["color"], marker_cornerradius=6,
+                    hovertemplate="%{x}: %{y:.1f} %<extra>" + label + "</extra>")
+    fig.update_layout(barmode="group", yaxis_title="Größter Einbruch in %", xaxis_title=None)
+    return _base(fig, 380)
+
+
+def strategy_scatter(stats: pd.DataFrame) -> go.Figure:
+    """Rendite gegen größten Einbruch: oben rechts ist besser."""
+    colors = {"Ohne Kompass": C_NOW, "Markt": C_ALT}
+    fig = go.Figure()
+    for name, row in stats.iterrows():
+        is_ref = name in colors or name.startswith("Markt")
+        color = C_ALT if name.startswith("Markt") else colors.get(name, C_GOAL)
+        fig.add_scatter(x=[row["Größter Einbruch %"]], y=[row["Rendite p.a. %"]], mode="markers+text",
+                        name=name, text=[name], textposition="top center",
+                        marker=dict(size=18 if not is_ref else 14, color=color,
+                                    symbol="diamond" if is_ref else "circle",
+                                    line=dict(color="#fff", width=2)),
+                        hovertemplate=(f"{name}<br>Rendite %{{y:.1f}} % p.a.<br>"
+                                       "Größter Einbruch %{x:.1f} %<extra></extra>"))
+    fig.update_layout(showlegend=False, xaxis_title="Größter Einbruch in % (weiter rechts = weniger Absturz)",
+                      yaxis_title="Rendite p.a. in %")
+    return _base(fig, 420)

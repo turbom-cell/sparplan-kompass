@@ -127,7 +127,7 @@ def test_walk_forward_is_fair_and_never_sells():
     assert (log.values >= -1e-9).all()
     assert np.allclose(log.sum(axis=1), 500.0)
     stats = compare_stats(values, rets, 0.025)
-    assert set(stats.index) == {"Sparplan-Kompass", "Weiter wie bisher", "Markt"}
+    assert set(stats.index) == {"Sparplan-Kompass", "Ohne Kompass", "Markt"}
     assert (underwater(rets).values <= 1e-9).all()
     # zu wenig Historie -> kein Ergebnis statt falscher Zahlen
     assert walk_forward(prices.tail(400), bench, h, 500.0, 3, 0.025, 0.02, 0.4, 12) is None
@@ -153,3 +153,38 @@ def test_long_history_reaches_2000():
     assert data.prices.index[0].year == 2000
     assert data.etf_start["SXR8.DE"].year >= 2010   # davor Ersatz-Reihe
     assert to_returns(data.prices).abs().max().max() < 0.15
+
+
+def test_mix_respects_all_rules(returns):
+    from core.optimizer import BLOCKS, block_weights, mix_weights
+    h = np.array([500.0, 6000.0, 500.0, 1000.0])
+    lo = diluted_weights(h, 400.0, 24)
+    limit = cvar(min_cvar_weights(returns, 0.6, lo), returns) * 1.3
+    for block in BLOCKS:
+        w = block_weights(block, returns, 0.02, limit, 0.6, lo).weights
+        assert w.sum() == pytest.approx(1.0)
+        assert (w >= lo - 1e-4).all() and w.max() <= max(0.6, lo.max()) + 1e-4
+        assert cvar(w, returns) <= limit * 1.003, block
+    mixed = mix_weights(returns, 0.02, limit, 0.6, lo, {"Sharpe": .5, "CVaR": .35, "Varianz": .15})
+    assert mixed.status == "ok"
+    assert cvar(mixed.weights, returns) <= limit * 1.003          # Mischung hält die Grenze (konvex)
+    assert (mixed.weights >= lo - 1e-4).all()
+    # Varianz-Baustein hat die kleinste Schwankung, CVaR-Baustein den kleinsten CVaR
+    cov = np.cov(returns, rowvar=False)
+    ws = {b: block_weights(b, returns, 0.02, limit, 0.6, lo).weights for b in BLOCKS}
+    assert min(ws, key=lambda b: ws[b] @ cov @ ws[b]) == "Varianz"
+    assert min(ws, key=lambda b: cvar(ws[b], returns)) == "CVaR"
+
+
+def test_core_position_keeps_its_share():
+    h = np.array([6000.0, 3000.0, 1000.0])
+    core = np.array([True, False, False])
+    lo = diluted_weights(h, 500.0, 36, core)
+    assert lo[0] == pytest.approx(0.6)                      # Kern behält 60 %
+    assert lo[1] == pytest.approx(3000.0 / (10000.0 + 500.0 * 36))   # Rest wird verwässert
+
+
+def test_custom_ticker_names():
+    from core.data_service import currency_of, display_name, group_of
+    assert currency_of("AAPL") == "USD" and currency_of("SAP.DE") == "EUR"
+    assert display_name("AAPL") == "AAPL" and group_of("AAPL") == "Eigene Titel"

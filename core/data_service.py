@@ -20,21 +20,31 @@ SAMPLE_FILE = DATA_DIR / "sample_prices.csv"
 PROXY_FILE = DATA_DIR / "proxy_history.csv"
 EARLIEST = pd.Timestamp("2000-01-01")
 
-# Ticker -> (Anzeigename, Teilfreistellung in %). Aktienfonds: 30 %, sonst 0 %.
-CATALOG: dict[str, tuple[str, int]] = {
-    "EUNL.DE": ("MSCI World", 30),
-    "VWCE.DE": ("FTSE All-World", 30),
-    "SXR8.DE": ("S&P 500", 30),
-    "SXRV.DE": ("Nasdaq 100", 30),
-    "XDWT.DE": ("MSCI World IT", 30),
-    "IS3S.DE": ("MSCI World Value", 30),
-    "IS3Q.DE": ("MSCI World Quality", 30),
-    "IS3N.DE": ("Emerging Markets", 30),
-    "EXSA.DE": ("STOXX Europe 600", 30),
-    "EXS1.DE": ("DAX", 30),
-    "EUNH.DE": ("Euro-Staatsanleihen", 0),
-    "4GLD.DE": ("Xetra-Gold", 0),
+# Ticker -> (Anzeigename, Teilfreistellung in %, Gruppe). Aktienfonds: 30 %, sonst 0 %.
+CATALOG: dict[str, tuple[str, int, str]] = {
+    "EUNL.DE": ("MSCI World", 30, "Aktien Welt"),
+    "VWCE.DE": ("FTSE All-World", 30, "Aktien Welt"),
+    "IUSN.DE": ("MSCI World Small Cap", 30, "Aktien Welt"),
+    "SXR8.DE": ("S&P 500", 30, "Aktien Regionen"),
+    "SXRV.DE": ("Nasdaq 100", 30, "Aktien Regionen"),
+    "EXSA.DE": ("STOXX Europe 600", 30, "Aktien Regionen"),
+    "EXW1.DE": ("EURO STOXX 50", 30, "Aktien Regionen"),
+    "EXS1.DE": ("DAX", 30, "Aktien Regionen"),
+    "IS3N.DE": ("Emerging Markets", 30, "Aktien Regionen"),
+    "XDWT.DE": ("MSCI World IT", 30, "Branchen & Faktoren"),
+    "XDWH.DE": ("MSCI World Gesundheit", 30, "Branchen & Faktoren"),
+    "XDWS.DE": ("MSCI World Basiskonsum", 30, "Branchen & Faktoren"),
+    "IS3S.DE": ("MSCI World Value", 30, "Branchen & Faktoren"),
+    "IS3Q.DE": ("MSCI World Quality", 30, "Branchen & Faktoren"),
+    "IQQ6.DE": ("Immobilien (REITs) Welt", 30, "Immobilien & Rohstoffe"),
+    "4GLD.DE": ("Xetra-Gold", 0, "Immobilien & Rohstoffe"),
+    "EXXY.DE": ("Rohstoffe breit", 0, "Immobilien & Rohstoffe"),
+    "EUNH.DE": ("Euro-Staatsanleihen", 0, "Anleihen & Geldmarkt"),
+    "EUN5.DE": ("Euro-Unternehmensanleihen", 0, "Anleihen & Geldmarkt"),
+    "IBCI.DE": ("Euro-Inflationsanleihen", 0, "Anleihen & Geldmarkt"),
+    "XEON.DE": ("Geldmarkt Euro", 0, "Anleihen & Geldmarkt"),
 }
+GROUPS = list(dict.fromkeys(g for _, _, g in CATALOG.values()))
 
 # Ersatz-Reihen für die Zeit vor ETF-Auflage: Ticker -> (Yahoo-Symbol, Art, Beschreibung)
 #   "usd"        = in US-Dollar, wird mit dem EUR/USD-Kurs in Euro umgerechnet
@@ -53,16 +63,29 @@ PROXIES: dict[str, tuple[str, str, str]] = {
     "EXS1.DE": ("^GDAXI", "eur", "DAX Performance-Index"),
     "EUNH.DE": ("VFITX", "usd_hedged", "US-Staatsanleihen mittlerer Laufzeit, ohne Währungseffekt (Näherung)"),
     "4GLD.DE": ("GC=F", "usd", "Gold-Future in US-Dollar (ab 08/2000)"),
+    "IUSN.DE": ("NAESX", "usd", "US-Nebenwerte-Indexfonds (Näherung)"),
+    "EXW1.DE": ("VEURX", "usd", "Vanguard European Stock Index (Näherung)"),
+    "XDWH.DE": ("VGHCX", "usd", "US-Gesundheitsfonds (Näherung)"),
+    "XDWS.DE": ("FDFAX", "usd", "US-Basiskonsumfonds (Näherung)"),
+    "IQQ6.DE": ("VGSIX", "usd", "US-Immobilienindexfonds (Näherung)"),
+    "EXXY.DE": ("^SPGSCI", "usd", "S&P-GSCI-Rohstoffindex (Näherung)"),
+    "EUN5.DE": ("DODIX", "usd_hedged", "US-Anleihefonds mit Unternehmensanleihen, ohne Währungseffekt (Näherung)"),
+    "IBCI.DE": ("VIPSX", "usd_hedged", "US-Inflationsanleihen, ohne Währungseffekt (Näherung, ab 06/2000)"),
+    "XEON.DE": ("VFISX", "usd_hedged", "Kurzlaufende US-Staatsanleihen, ohne Währungseffekt (Näherung)"),
 }
 PRICE_INDEX_DIVIDEND = 0.018
 
 
 def display_name(ticker: str) -> str:
-    return CATALOG.get(ticker, (ticker, 0))[0]
+    return CATALOG.get(ticker, (ticker, 0, ""))[0]
 
 
 def default_teilfreistellung(ticker: str) -> int:
-    return CATALOG.get(ticker, (ticker, 30))[1]
+    return CATALOG.get(ticker, (ticker, 30, ""))[1]
+
+
+def group_of(ticker: str) -> str:
+    return CATALOG.get(ticker, (ticker, 30, "Eigene Titel"))[2]
 
 
 @dataclass
@@ -142,7 +165,7 @@ def extend_with_proxies(raw: pd.DataFrame, proxies: pd.DataFrame) -> tuple[pd.Da
     """Verlängert jede ETF-Spalte nach hinten. Gibt auch das Datum des ersten echten Kurses zurück."""
     columns, etf_start = {}, {}
     for t in raw.columns:
-        etf = repair_etf(raw[t])
+        etf = repair_etf(raw[t]) if t in CATALOG else raw[t].dropna()
         if etf.empty:
             continue
         etf_start[t] = etf.index[0]
@@ -176,14 +199,53 @@ def load_prices(tickers: list[str], start_year: int = 2000, allow_live: bool = T
     """
     tickers = list(dict.fromkeys(tickers))
     start = pd.Timestamp(year=int(start_year), month=1, day=1)
-    if allow_live:
+    known = [t for t in tickers if t in CATALOG]
+    custom = [t for t in tickers if t not in CATALOG]
+    extra = _custom_prices(custom) if (custom and allow_live) else pd.DataFrame()
+    if allow_live and known:
         try:
-            data = _finish(_download(tickers, pd.Timestamp("2005-01-01")), tickers, start, "live")
-            if not data.prices.empty and not data.missing:
+            raw = _download(known, pd.Timestamp("2005-01-01"))
+            data = _finish(raw.join(extra, how="outer") if not extra.empty else raw, tickers, start, "live")
+            if not data.prices.empty and not set(data.missing) & set(known):
                 return data
         except Exception:
             pass
-    return _finish(_snapshot(tickers), tickers, start, "snapshot")
+    snap = _snapshot(known)
+    if not extra.empty:
+        snap = snap.join(extra, how="outer") if not snap.empty else extra
+    return _finish(snap, tickers, start, "snapshot" if known else "live")
+
+
+EUR_SUFFIXES = (".DE", ".F", ".AS", ".PA", ".MI", ".MC", ".VI", ".BR", ".HE", ".IR", ".LS")
+
+
+def currency_of(ticker: str) -> str:
+    """Grobe Währungs-Erkennung über das Börsenkürzel: Xetra & Euro-Börsen = EUR, ohne Endung = USD."""
+    if ticker.upper().endswith(EUR_SUFFIXES):
+        return "EUR"
+    return "USD" if "." not in ticker and not ticker.startswith("^") else "?"
+
+
+def _custom_prices(tickers: list[str]) -> pd.DataFrame:
+    """Frei eingegebene Yahoo-Kürzel live laden; US-Werte in Euro umrechnen."""
+    try:
+        raw = _download(tickers + ["EURUSD=X"], pd.Timestamp("1999-01-01"))
+    except Exception:
+        return pd.DataFrame()
+    if raw.empty:
+        return pd.DataFrame()
+    fx = raw["EURUSD=X"].dropna() if "EURUSD=X" in raw.columns else pd.Series(dtype=float)
+    out = {}
+    for t in tickers:
+        if t not in raw.columns or raw[t].dropna().empty:
+            continue
+        s = raw[t].dropna()
+        if currency_of(t) == "USD":
+            if fx.empty:
+                continue
+            s = (s / fx.reindex(s.index).ffill()).dropna()   # Euro-Kurs erst ab 12/2003 verfügbar
+        out[t] = s
+    return pd.DataFrame(out)
 
 
 def to_returns(prices: pd.DataFrame) -> pd.DataFrame:

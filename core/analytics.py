@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .optimizer import target_weights
+from .optimizer import mix_weights, target_weights
 
 CRISES: dict[str, tuple[str, str]] = {
     "Dotcom-Crash": ("2000-09-04", "2003-03-12"),
@@ -74,13 +74,15 @@ def curve_stats(curves: pd.DataFrame, rf: float) -> pd.DataFrame:
 # --------------------------------------------------------------------------- Marktvergleich
 def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndarray, budget: float,
                  years: int, rf: float, limit_pct: float, w_max: float, horizon: int,
-                 reopt_months: int = 6, min_train_days: int = 500):
+                 reopt_months: int = 6, min_train_days: int = 500,
+                 mix: dict[str, float] | None = None, core: np.ndarray | None = None):
     """Spielt die letzten `years` Jahre mit echten Kursen nach, Monat für Monat.
 
     Drei Anleger starten mit demselben Geld und zahlen dieselbe Sparrate ein:
       - "Sparplan-Kompass": rechnet alle `reopt_months` Monate neu, nur mit Kursen,
         die es an dem Tag schon gab, und verteilt die Sparrate entsprechend. Verkauft nie.
-      - "Weiter wie bisher": Sparrate nach den Start-Gewichten des Depots.
+      - "Ohne Kompass": spart weiter wie bisher, also Sparrate im Verhältnis des
+        heutigen Depots. Das Klumpenrisiko bleibt.
       - "Markt": alles in den Vergleichs-ETF.
     Rückgabe: (Depotwerte in €, Tagesrenditen ohne Einzahlungseffekt, Kauf-Protokoll) oder None.
     """
@@ -116,8 +118,8 @@ def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndar
         if last_month is None or day.month != last_month:      # erster Börsentag des Monats
             if month_count % reopt_months == 0:
                 train = returns.loc[:day].iloc[:-1].to_numpy()
-                lo = diluted_weights(h_kompass, budget, horizon)
-                target = target_weights(train, rf, limit_pct, w_max, lo).weights
+                lo = diluted_weights(h_kompass, budget, horizon, core)
+                target = mix_weights(train, rf, limit_pct, w_max, lo, mix).weights
                 alloc = build_plan(h_kompass, target, budget, horizon, names).monthly.to_numpy()
                 log.append({"Datum": day, **{n: a for n, a in zip(names, alloc)}})
             h_kompass = h_kompass + alloc
@@ -130,7 +132,7 @@ def walk_forward(prices: pd.DataFrame, bench: pd.Series, start_holdings: np.ndar
         values.append([h_kompass.sum(), h_static.sum(), v_market, paid])
         rets.append(day_ret)
 
-    cols = ["Sparplan-Kompass", "Weiter wie bisher", "Markt"]
+    cols = ["Sparplan-Kompass", "Ohne Kompass", "Markt"]
     values_df = pd.DataFrame(values, index=sim_days, columns=cols + ["Eingezahlt"])
     rets_df = pd.DataFrame(rets, index=sim_days, columns=cols)
     return values_df, rets_df, pd.DataFrame(log).set_index("Datum")
@@ -142,20 +144,58 @@ def underwater(rets: pd.DataFrame) -> pd.DataFrame:
     return (index / index.cummax() - 1.0) * 100
 
 
+def longest_underwater_months(index: pd.Series) -> float:
+    """Längste Zeit unter dem bisherigen Höchststand, in Monaten."""
+    under = (index / index.cummax()) < 0.9999
+    longest, start = 0, None
+    for day, flag in under.items():
+        if flag and start is None:
+            start = day
+        elif not flag and start is not None:
+            longest = max(longest, (day - start).days)
+            start = None
+    if start is not None:
+        longest = max(longest, (index.index[-1] - start).days)
+    return longest / 30.44
+
+
 def compare_stats(values: pd.DataFrame, rets: pd.DataFrame, rf: float) -> pd.DataFrame:
     rows = []
     paid = float(values["Eingezahlt"].iloc[-1])
     dd = underwater(rets)
     for name in rets.columns:
         daily = rets[name]
+        index = (1.0 + daily).cumprod()
         k = max(1, int(np.ceil(0.05 * len(daily))))
         years = len(daily) / 252
-        twr = float((1.0 + daily).prod() ** (1 / years) - 1)
+        twr = float(index.iloc[-1] ** (1 / years) - 1)
         vol = float(daily.std() * np.sqrt(252))
+        if len(index) > 260:
+            yearly = index.iloc[252:].to_numpy() / index.iloc[:-252].to_numpy() - 1
+            worst_year = float(np.min(yearly) * 100)
+        else:
+            worst_year = float("nan")
         rows.append({"Depot": name, "Endwert €": float(values[name].iloc[-1]),
                      "Gewinn €": float(values[name].iloc[-1]) - paid,
                      "Rendite p.a. %": twr * 100, "Schwankung p.a. %": vol * 100,
                      "Sharpe": (twr - rf) / vol if vol > 0 else 0.0,
                      "Schrecktag %": float(-daily.nsmallest(k).mean() * 100),
-                     "Größter Einbruch %": float(dd[name].min())})
+                     "Größter Einbruch %": float(dd[name].min()),
+                     "Schlechtestes Jahr %": worst_year,
+                     "Längste Durststrecke Monate": longest_underwater_months(index)})
     return pd.DataFrame(rows).set_index("Depot")
+
+
+def crisis_from_rets(rets: pd.DataFrame) -> pd.DataFrame:
+    """Größter Einbruch jedes Depots in jeder Krise, die im Zeitraum liegt (aus dem Backtest)."""
+    rows = []
+    for name, (start, end) in CRISES.items():
+        window = rets.loc[start:end]
+        if len(window) < 10 or rets.index[0] > pd.Timestamp(start) + pd.Timedelta(days=20):
+            continue
+        row = {"Krise": name}
+        for col in rets.columns:
+            idx = pd.concat([pd.Series([1.0]), (1.0 + window[col]).cumprod().reset_index(drop=True)])
+            row[col] = drawdown(idx) * 100
+        rows.append(row)
+    return pd.DataFrame(rows)

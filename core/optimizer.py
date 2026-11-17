@@ -1,10 +1,18 @@
 """Rechenkern: Risikokennzahlen und Ziel-Depot.
 
-Ziel-Depot = höchste erwartete Rendite unter drei Nebenbedingungen:
-  1. Der Verlust an einem Schrecktag (95 %-CVaR) bleibt unter der Schmerzschwelle.
-  2. Keine Position ist größer als die Klumpengrenze.
-  3. Optional Mindestgewichte je Position. Damit lässt sich "nichts verkaufen"
-     abbilden: Was schon im Depot liegt, kann nur verwässert, nicht abgebaut werden.
+Für jedes Ziel-Depot gelten dieselben drei Regeln:
+  1. Der Verlust an einem Schrecktag (95 %-CVaR) bleibt unter der Schmerzgrenze.
+  2. Keine Position ist größer als die maximale Positionsgröße.
+  3. Mindestgewichte je Position bilden "nichts verkaufen" ab: Was schon im Depot liegt,
+     kann nur verwässert, nicht abgebaut werden.
+
+Innerhalb dieser Regeln gibt es vier Bausteine, die sich mischen lassen:
+  Rendite  – höchste erwartete Rendite                  (lineares Programm)
+  Sharpe   – höchste Rendite pro Schwankung             (SLSQP)
+  CVaR     – kleinster Verlust an Schrecktagen          (lineares Programm)
+  Varianz  – kleinste Schwankung                        (SLSQP)
+Jeder Baustein hält die Regeln ein. Weil alle Regeln konvex sind, hält sie auch jede
+Mischung der Bausteine ein.
 """
 from __future__ import annotations
 
@@ -13,7 +21,7 @@ from math import ceil
 
 import numpy as np
 from scipy import sparse
-from scipy.optimize import linprog
+from scipy.optimize import linprog, minimize
 
 TRADING_DAYS = 252
 ALPHA = 0.05        # die 5 % schlechtesten Börsentage
@@ -30,6 +38,13 @@ def cvar(weights: np.ndarray, returns: np.ndarray, alpha: float = ALPHA) -> floa
     k = _tail_size(len(port), alpha)
     worst = np.partition(port, k - 1)[:k]
     return float(-worst.mean())
+
+
+def _cvar_grad(weights: np.ndarray, returns: np.ndarray, alpha: float = ALPHA) -> np.ndarray:
+    port = returns @ weights
+    k = _tail_size(len(port), alpha)
+    idx = np.argpartition(port, k - 1)[:k]
+    return -returns[idx].mean(axis=0)
 
 
 def expected_returns(returns: np.ndarray) -> np.ndarray:
@@ -132,10 +147,19 @@ def target_weights(returns: np.ndarray, rf: float, cvar_limit: float, w_max: flo
     return Target(w / w.sum(), "ok", cvar_min)
 
 
-def diluted_weights(holdings: np.ndarray, budget: float, months: int) -> np.ndarray:
-    """Mindestgewichte, wenn nie verkauft und `months` Sparraten zugekauft werden."""
+def diluted_weights(holdings: np.ndarray, budget: float, months: int,
+                    core: np.ndarray | None = None) -> np.ndarray:
+    """Mindestgewichte, wenn nie verkauft und `months` Sparraten zugekauft werden.
+
+    Kernpositionen (`core` = True) werden nicht verwässert: Sie behalten mindestens ihren
+    heutigen Anteil und bekommen dafür weiter ihren Teil der Sparrate.
+    """
     holdings = np.asarray(holdings, dtype=float)
-    return holdings / (holdings.sum() + budget * months)
+    lo = holdings / (holdings.sum() + budget * months)
+    if core is not None and holdings.sum() > 0:
+        core = np.asarray(core, dtype=bool)
+        lo = np.where(core, holdings / holdings.sum(), lo)
+    return lo
 
 
 def earliest_month(returns: np.ndarray, holdings: np.ndarray, budget: float, cvar_limit: float,
@@ -154,3 +178,64 @@ def earliest_month(returns: np.ndarray, holdings: np.ndarray, budget: float, cva
         mid = (low + high) // 2
         low, high = (low, mid) if reachable(mid) else (mid, high)
     return high
+
+
+# --------------------------------------------------------------------------- Strategie-Mix
+BLOCKS = ("Rendite", "Sharpe", "CVaR", "Varianz")
+
+
+def _slsqp_under_limit(objective, returns: np.ndarray, cvar_limit: float, lo: np.ndarray,
+                       hi: np.ndarray, starts: list[np.ndarray], fallback: np.ndarray) -> np.ndarray:
+    cons = [{"type": "eq", "fun": lambda w: w.sum() - 1.0},
+            {"type": "ineq", "fun": lambda w: cvar_limit - cvar(w, returns),
+             "jac": lambda w: -_cvar_grad(w, returns)}]
+    best, best_val = fallback, objective(fallback)
+    for w0 in starts:
+        res = minimize(objective, w0, method="SLSQP", bounds=list(zip(lo, hi)), constraints=cons,
+                       options={"maxiter": 300, "ftol": 1e-11})
+        w = np.clip(res.x, lo, hi)
+        w = w / w.sum()
+        if cvar(w, returns) <= cvar_limit * 1.002 and objective(w) < best_val:
+            best, best_val = w, objective(w)
+    return best
+
+
+def block_weights(block: str, returns: np.ndarray, rf: float, cvar_limit: float, w_max: float,
+                  w_min: np.ndarray | None) -> Target:
+    """Ein Baustein des Mix. Alle halten Schmerzgrenze, Positionsgröße und "nichts verkaufen" ein."""
+    if block == "Rendite":
+        return target_weights(returns, rf, cvar_limit, w_max, w_min)
+    n = returns.shape[1]
+    lo, hi = _bounds(n, w_max, w_min)
+    w_safe = min_cvar_weights(returns, w_max, w_min)
+    cvar_min = cvar(w_safe, returns)
+    unreachable = cvar_limit <= cvar_min * 1.001
+    if block == "CVaR" or n == 1 or unreachable:
+        return Target(w_safe, "unreachable" if unreachable else "ok", cvar_min)
+    mu, cov = expected_returns(returns), covariance(returns)
+    w_ret = target_weights(returns, rf, cvar_limit, w_max, w_min).weights
+    starts = [w_safe, 0.5 * w_safe + 0.5 * w_ret, w_ret]
+    if block == "Sharpe":
+        w = _slsqp_under_limit(lambda w: -(w @ mu - rf) / np.sqrt(w @ cov @ w), returns, cvar_limit,
+                               lo, hi, starts, w_safe)
+    elif block == "Varianz":
+        w = _slsqp_under_limit(lambda w: float(w @ cov @ w) * 1e4, returns, cvar_limit,
+                               lo, hi, starts, w_safe)
+    else:
+        raise ValueError(f"Unbekannter Baustein: {block}")
+    w = np.where(w < 1e-5, 0.0, w)
+    return Target(w / w.sum(), "ok", cvar_min)
+
+
+def mix_weights(returns: np.ndarray, rf: float, cvar_limit: float, w_max: float = 1.0,
+                w_min: np.ndarray | None = None, mix: dict[str, float] | None = None) -> Target:
+    """Gewichtete Mischung der Bausteine, z. B. {"Sharpe": .5, "CVaR": .35, "Varianz": .15}."""
+    mix = {k: float(v) for k, v in (mix or {"Rendite": 1.0}).items() if v and v > 0}
+    if not mix:
+        mix = {"Rendite": 1.0}
+    total = sum(mix.values())
+    parts = {b: block_weights(b, returns, rf, cvar_limit, w_max, w_min) for b in mix}
+    w = sum(parts[b].weights * (a / total) for b, a in mix.items())
+    status = "unreachable" if any(p.status == "unreachable" for p in parts.values()) else "ok"
+    cvar_min = min(p.cvar_min for p in parts.values())
+    return Target(w / w.sum(), status, cvar_min)
