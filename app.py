@@ -288,31 +288,44 @@ if sim is not None:
     crises = analytics.crisis_from_rets(rets)
     K, O, M = stats.loc["Sparplan-Kompass"], stats.loc["Ohne Kompass"], stats.loc["Markt"]
     crisis_wins = int((crises["Sparplan-Kompass"] > crises["Ohne Kompass"]).sum()) if len(crises) else 0
+    # Kernbotschaft: Geld (Endwert) und Ruhe (größter Einbruch) gegenüber "ohne Kompass"
+    money_diff = K["Endwert €"] / O["Endwert €"] - 1
+    calmer = K["Größter Einbruch %"] > O["Größter Einbruch %"] + 0.5
+    if abs(money_diff) <= 0.03:
+        money_word, joiner = "Gleich viel Geld", "Aber ruhiger"
+    elif money_diff > 0.03:
+        money_word, joiner = "Mehr Geld", "Und ruhiger"
+    elif money_diff > -0.10:
+        money_word, joiner = "Etwas weniger Geld", "Dafür ruhiger"
+    else:
+        money_word, joiner = "Weniger Geld", "Dafür deutlich ruhiger"
+    if not calmer:
+        joiner = "Nicht ruhiger"
+    headline = f"{money_word}. {joiner}."
 
 # =========================================================================== Kopfbereich
 with hero_slot:
-    proofs = []
     if sim is not None:
-        proofs.append((f"{num(K['Sharpe'], 2)} statt {num(O['Sharpe'], 2)}",
-                       f"Sharpe Ratio mit statt ohne Kompass, {period} "
-                       f"({bench_name}: {num(M['Sharpe'], 2)})"))
-        proofs.append((f"{num(K['Größter Einbruch %'], 0)} % statt {num(O['Größter Einbruch %'], 0)} %",
-                       "größter Einbruch mit statt ohne Kompass"))
-    if cost.total >= 100 or sim is None or not len(crises):
-        proofs.append((eur(cost.total), "Steuern und Gebühren, die du dir gegenüber Umschichten "
-                                        "durch Verkauf sparst"))
+        proofs = [
+            (f"{eur(K['Endwert €'])}", f"Endwert mit Kompass, ohne Kompass {eur(O['Endwert €'])} "
+                                      f"({num(money_diff * 100, 1, True)} %), {period}"),
+            (f"{num(K['Größter Einbruch %'], 0)} % statt {num(O['Größter Einbruch %'], 0)} %",
+             "größter Einbruch mit statt ohne Kompass"),
+            (f"{num(K['Sharpe'], 2)} statt {num(O['Sharpe'], 2)}",
+             f"Sharpe Ratio (Rendite pro Risiko), {bench_name}: {num(M['Sharpe'], 2)}"),
+        ]
+        title = f"{money_word}.<br>{joiner}."
     else:
-        proofs.append((f"{crisis_wins} von {len(crises)}",
-                       "Krisen mit kleinerem Verlust als ohne Kompass"))
+        proofs, title = [], "Ruhiger sparen.<br>Ohne zu verkaufen."
     theme.hero(
-        "Mehr Rendite pro Risiko.<br>Keine Steuer beim Umbau.",
+        title,
         "Der <b>Sparplan-Kompass</b> baut dein ETF-Depot nur über die Aufteilung deiner Sparrate "
-        "um. Du verkaufst nichts, zahlst keine Steuer auf Kursgewinne und legst selbst fest, wie "
-        "viel ein schlechter Börsentag kosten darf.",
+        "um. Du verkaufst nichts, zahlst keine Steuer auf Kursgewinne, und das Depot schwankt "
+        "weniger – nachgerechnet mit echten Kursen.",
         [("#34d399" if source == "live" else "#fbbf24",
           "Live-Kurse" if source == "live" else "Gespeicherter Kurs-Stand"),
-         ("", f"Kurse {prices.index[0]:%m/%Y} – {prices.index[-1]:%m/%Y}"),
-         ("", f"Depot {eur(V)}"), ("", f"Sparrate {eur(budget)} / Monat"), ("", strategy)],
+         ("", f"Vergleich {period}"), ("", f"Depot {eur(V)}"),
+         ("", f"Sparrate {eur(budget)} / Monat"), ("", strategy)],
         proofs, eyebrow="Sparplan-Kompass · für ETF-Sparer")
 
 # =========================================================================== Überblick
@@ -322,68 +335,54 @@ with tab_home:
         {"icon": "📈", "title": "Klumpen wachsen von selbst",
          "text": f"Was gut läuft, wird im Depot immer größer. In deinem Depot sind es heute "
                  f"<b>{pct(w_now[top_now] * 100, 0)} {theme.esc(names[top_now])}</b>."},
-        {"icon": "❓", "title": "Risiko in Prozent sagt niemandem etwas",
-         "text": f"„Volatilität {pct(now.vol * 100, 0)}“ ist abstrakt. Konkret heißt es: An einem "
-                 f"schlechten Börsentag verlierst du im Schnitt <b>{eur(now.cvar * V)}</b>."},
-        {"icon": "💸", "title": "Umschichten kostet Geld",
+        {"icon": "🎢", "title": "Klumpen machen das Depot unruhig",
+         "text": f"An einem schlechten Börsentag verlierst du heute im Schnitt "
+                 f"<b>{eur(now.cvar * V)}</b>. Wer in so einer Phase aussteigt, verpasst die Erholung."},
+        {"icon": "💸", "title": "Umschichten kostet Steuern",
          "text": ("Wer verkauft, zahlt 26,375 % Steuer auf den Gewinn plus Gebühren. Bei deinem "
                   f"Depot wären das <b>{eur(cost.total)}</b>." if cost.total >= 100 else
                   "Wer verkauft, zahlt 26,375 % Steuer auf den Gewinn plus Gebühren. Bei deinem Depot "
                   "fängt der Freibetrag das noch ab; bei großen Depots mit hohen Gewinnen sind es "
                   "schnell Tausende Euro (Vorlage „Langjähriger Sparer“).")},
     ])
-    theme.section("Der Unterschied", "Drei Wege mit deinem Depot – mit deinen Zahlen")
-    dd_k = f"{num(K['Größter Einbruch %'])} %" if sim is not None else "–"
-    dd_o = f"{num(O['Größter Einbruch %'])} %" if sim is not None else "–"
+    if sim is not None:
+        theme.section("Das Ergebnis", headline,
+                      f"Dein Depot mit und ohne Kompass, nachgerechnet mit echten Tageskursen {period}.")
+        theme.cards([
+            {"num": f"{num(money_diff * 100, 1, True)} %", "title": money_word,
+             "text": f"Endwert {eur(K['Endwert €'])} mit Kompass gegen {eur(O['Endwert €'])} ohne. "
+                     f"Rendite pro Jahr {num(K['Rendite p.a. %'])} % gegen {num(O['Rendite p.a. %'])} %.",
+             "src": "gleiche Einzahlungen, gleiche Kurse"},
+            {"num": f"{num(K['Größter Einbruch %'], 0)} % statt {num(O['Größter Einbruch %'], 0)} %",
+             "title": "Kleinere Abstürze",
+             "text": f"Der größte Einbruch vom Hoch bis zum Tief. Schlechtestes Jahr: "
+                     f"{num(K['Schlechtestes Jahr %'])} % statt {num(O['Schlechtestes Jahr %'])} %.",
+             "src": f"weniger Verlust in {crisis_wins} von {len(crises)} Krisen" if len(crises) else ""},
+            {"num": f"{num(K['Sharpe'], 2)} statt {num(O['Sharpe'], 2)}",
+             "title": "Mehr Rendite pro Risiko",
+             "text": f"Sharpe Ratio: Rendite über dem sicheren Zins geteilt durch die Schwankung. "
+                     f"Der {bench_name} kam auf {num(M['Sharpe'], 2)}.",
+             "src": f"sicherer Zins {pct(rf * 100, 2)}"},
+            {"num": "0 €", "title": "Keine Steuer beim Umbau",
+             "text": f"Sofort umschichten würde {eur(cost.sold)} Verkäufe und {eur(cost.total)} "
+                     "Steuer und Gebühren auslösen. Der Kompass kauft nur zu.",
+             "src": "Abgeltungsteuer, Teilfreistellung, Pauschbetrag"},
+        ])
+    theme.section("Der Unterschied", "Drei Wege mit deinem Depot")
+    na = "nicht nachgerechnet"
     theme.compare_table(
         ["Weiter sparen wie bisher", "Umschichten durch Verkauf", "Sparplan-Kompass"],
-        [["Klumpenrisiko", '<span class="no">bleibt</span>', '<span class="yes">sofort weg</span>',
+        [[f"Endwert, {period}", eur(O["Endwert €"]) if sim is not None else "–", na,
+          f'<b>{eur(K["Endwert €"])}</b>' if sim is not None else "–"],
+         [f"Größter Einbruch, {period}",
+          f'<span class="no">{num(O["Größter Einbruch %"])} %</span>' if sim is not None else "–", na,
+          f'<span class="yes">{num(K["Größter Einbruch %"])} %</span>' if sim is not None else "–"],
+         ["Klumpenrisiko", '<span class="no">bleibt</span>', '<span class="yes">sofort weg</span>',
           f'<span class="yes">schrittweise weg</span> ({months} Monate)'],
          ["Steuer und Gebühren beim Umbau", '<span class="yes">0 €</span>',
           f'<span class="no">{eur(cost.total)}</span>', '<span class="yes">0 €</span>'],
-         ["Verlust an einem Schrecktag", eur(now.cvar * V), f"{eur(free.cvar * V)} (sofort)",
-          f"{eur(goal.cvar * V)} (nach {months} Monaten)"],
-         [f"Sharpe Ratio, {period}",
-          num(O["Sharpe"], 2) if sim is not None else "–", "nicht nachgerechnet",
-          f'<b>{num(K["Sharpe"], 2)}</b>' if sim is not None else "–"],
-         [f"Größter Einbruch, {period}", dd_o, "nicht nachgerechnet", dd_k],
          ["Was du tun musst", "nichts", "Verkaufs- und Kauforders", "Sparplan einmal neu einstellen"]],
         highlight=2)
-    theme.section("Die Belege", "Was wir behaupten – und wo man es nachprüfen kann")
-    proof_cards = []
-    if sim is not None:
-        proof_cards += [
-            {"num": f"{num(K['Sharpe'], 2)} statt {num(O['Sharpe'], 2)}",
-             "title": "Mehr Rendite pro Risiko",
-             "text": f"Sharpe Ratio mit und ohne Kompass, {bench_name}: {num(M['Sharpe'], 2)}. "
-                     f"Rendite p.a. {num(K['Rendite p.a. %'])} % gegen {num(O['Rendite p.a. %'])} %.",
-             "src": f"Tageskurse, {period}, risikofreier Zins {pct(rf * 100, 2)}"},
-            {"num": f"{num(K['Größter Einbruch %'] - O['Größter Einbruch %'], 1, True)} Punkte",
-             "title": "Kleinerer Absturz",
-             "text": f"Größter Einbruch {num(K['Größter Einbruch %'])} % statt "
-                     f"{num(O['Größter Einbruch %'])} % ohne Kompass und "
-                     f"{num(M['Größter Einbruch %'])} % im {bench_name}.",
-             "src": f"Tageskurse, {period}, Tab „Beweis“"},
-            {"num": f"{num(K['Längste Durststrecke Monate'], 0)} statt {num(O['Längste Durststrecke Monate'], 0)} Monate",
-             "title": "Kürzere Durststrecke",
-             "text": "So lange lag das Depot höchstens unter seinem alten Höchststand. Kürzer "
-                     "heißt: weniger Grund, in der Krise aufzugeben.",
-             "src": "berechnet ohne Effekt der Einzahlungen"},
-        ]
-    proof_cards.append({"num": eur(cost.total), "title": "Keine Steuer beim Umbau",
-                        "text": f"Sofort umschichten würde {eur(cost.sold)} Verkäufe auslösen. "
-                                "Der Kompass erreicht das Ziel nur über Zukäufe.",
-                        "src": "Abgeltungsteuer, Teilfreistellung, Pauschbetrag"})
-    theme.cards(proof_cards)
-    theme.section("So funktioniert es", "In drei Schritten zum ruhigeren Depot")
-    theme.cards([
-        {"icon": "1", "title": "Depot eintragen", "text": "Bestand je ETF, Sparrate und die "
-                                                            "Bausteine, die dazukommen dürfen."},
-        {"icon": "2", "title": "Regeln festlegen", "text": "Schmerzgrenze in Prozent, maximale "
-                                                            "Positionsgröße, Umbau-Zeitraum, Strategie."},
-        {"icon": "3", "title": "Sparplan einstellen", "text": "Die App sagt, wie viel Euro jeden "
-                                                               "Monat in welchen ETF gehen. Verkauft wird nichts."},
-    ])
     st.caption("Studienprojekt, keine Anlageberatung. Vergangene Kurse sind keine Garantie für die "
                "Zukunft. Alle Zahlen dieser Seite werden live aus deinen Eingaben berechnet.")
 
@@ -440,68 +439,82 @@ with tab_proof:
     if sim is None:
         st.info("Für diesen Zeitraum reicht die gemeinsame Kurshistorie nicht aus.")
     else:
+        theme.section("Die Antwort", headline)
+
         def vs(mine: float, other: float, unit: str, lower_better: bool, digits: int = 1):
             diff = mine - other
+            if unit == "€":
+                text = f"{num((mine / other - 1) * 100, 1, True)} % gegenüber ohne Kompass"
+                good = abs(mine / other - 1) <= 0.03 or diff > 0
+                return {"sub": text, "tone": "good" if good else "bad"}
             good = diff < 0 if lower_better else diff > 0
             word = "weniger" if diff < 0 else "mehr"
-            text = (f"{eur(abs(diff))} {word}" if unit == "€" else f"{num(abs(diff), digits)} {unit} {word}")
-            return {"sub": text + " als ohne Kompass", "tone": "good" if good else "bad"}
+            return {"sub": f"{num(abs(diff), digits)} {unit} {word} als ohne Kompass",
+                    "tone": "good" if good else "bad"}
 
-        theme.kpi_row([
-            {"label": "Größter Einbruch", "value": f"{num(K['Größter Einbruch %'])} %",
-             **vs(-K["Größter Einbruch %"], -O["Größter Einbruch %"], "Punkte", True)},
-            {"label": "Schlechtestes Jahr", "value": f"{num(K['Schlechtestes Jahr %'])} %",
-             **vs(-K["Schlechtestes Jahr %"], -O["Schlechtestes Jahr %"], "Punkte", True)},
-            {"label": "Längste Durststrecke", "value": f"{num(K['Längste Durststrecke Monate'], 0)} Mon.",
-             **vs(K["Längste Durststrecke Monate"], O["Längste Durststrecke Monate"], "Monate", True, 0)},
-            {"label": "Sharpe Ratio", "value": num(K["Sharpe"], 2),
-             **vs(K["Sharpe"], O["Sharpe"], "", False, 2)},
-            {"label": "Endwert", "value": eur(K["Endwert €"]),
-             **vs(K["Endwert €"], O["Endwert €"], "€", False)},
-        ])
-        richer = K["Endwert €"] >= O["Endwert €"]
-        theme.callout(
-            f"Mit Kompass fiel das Depot höchstens um <b>{num(K['Größter Einbruch %'])} %</b>, ohne Kompass "
-            f"um {num(O['Größter Einbruch %'])} %, im {bench_name} um {num(M['Größter Einbruch %'])} %. "
-            + (f"Und am Ende stehen sogar <b>{eur(K['Endwert €'] - O['Endwert €'])} mehr</b> auf dem Depot."
-               if richer else
-               f"Der Preis: <b>{eur(O['Endwert €'] - K['Endwert €'])} weniger Endwert</b> als ohne Kompass. "
-               "Wer den größeren Absturz durchgehalten hätte, hätte mehr verdient."))
-        st.plotly_chart(charts.compare_lines(values.rename(columns={}), f"Markt ({bench_name})",
-                                             analytics.CRISES), width="stretch")
-        st.plotly_chart(charts.underwater_lines(analytics.underwater(rets), f"Markt ({bench_name})",
-                                                analytics.CRISES), width="stretch")
+        g1, g2 = st.columns([2, 3], gap="large")
+        with g1:
+            theme.panel_title("Geld")
+            theme.kpi_row([
+                {"label": "Endwert", "value": eur(K["Endwert €"]), "accent": theme.BLUE,
+                 **vs(K["Endwert €"], O["Endwert €"], "€", False)},
+                {"label": "Rendite pro Jahr", "value": f"{num(K['Rendite p.a. %'])} %", "accent": theme.BLUE,
+                 **vs(K["Rendite p.a. %"], O["Rendite p.a. %"], "Punkte", False)},
+            ])
+        with g2:
+            theme.panel_title("Ruhe")
+            theme.kpi_row([
+                {"label": "Größter Einbruch", "value": f"{num(K['Größter Einbruch %'])} %", "accent": theme.GREEN,
+                 **vs(-K["Größter Einbruch %"], -O["Größter Einbruch %"], "Punkte", True)},
+                {"label": "Schlechtestes Jahr", "value": f"{num(K['Schlechtestes Jahr %'])} %",
+                 "accent": theme.GREEN, **vs(-K["Schlechtestes Jahr %"], -O["Schlechtestes Jahr %"], "Punkte", True)},
+                {"label": "Sharpe Ratio", "value": num(K["Sharpe"], 2), "accent": theme.GREEN,
+                 **vs(K["Sharpe"], O["Sharpe"], "", False, 2)},
+            ])
+        st.plotly_chart(charts.money_and_calm(
+            values, rets, f"Markt ({bench_name})",
+            f"{money_word}: Depotwert in € mit und ohne Kompass",
+            f"{joiner}: so tief lag das Depot jeweils unter seinem Höchststand",
+            analytics.CRISES), width="stretch")
+        st.caption("Oben liegen die Linien nah beieinander: gleiche Einzahlungen, ähnlicher Endwert. "
+                   "Unten ist die blaue Fläche kleiner: Das Depot fiel in Krisen weniger tief. "
+                   "Rot hinterlegt: Krisenphasen.")
+
+        calm_cols = ["Größter Einbruch %", "Schlechtestes Jahr %", "Schwankung p.a. %", "Schrecktag %",
+                     "Längste Durststrecke Monate"]
+        calm_wins = sum(abs(K[c]) < abs(O[c]) - 1e-9 for c in calm_cols)
+        theme.section("Ruhe-Bilanz", f"Fünf Maße für Unruhe – {calm_wins} von 5 kleiner mit Kompass",
+                      "Der graue Balken ist „ohne Kompass“ = 100 %. Je kürzer der blaue Balken, desto ruhiger.")
+        st.plotly_chart(charts.calm_bars(stats), width="stretch")
         if len(crises):
-            theme.section("Krisen", f"In {crisis_wins} von {len(crises)} Krisen weniger Verlust als ohne Kompass")
-            st.plotly_chart(charts.crisis_compare_bar(crises, f"Markt ({bench_name})"), width="stretch")
-        theme.section("Alle Kennzahlen", "Zum Nachprüfen")
-        st.dataframe(stats.rename(index={"Markt": f"Markt ({bench_name})"}), width="stretch",
-                     column_config={c: st.column_config.NumberColumn(format="%.0f" if "€" in c or "Monate" in c
-                                                                     else "%.2f")
-                                    for c in stats.columns})
-
-        theme.section("Welche Strategie?", "Rendite-Fokus, 50/35/15 oder eigene Mischung im Vergleich",
-                      "Gleiche Regeln, gleiche Kurse, gleicher Zeitraum. Nur die Strategie ändert sich.")
-        if st.button("Strategien vergleichen (dauert etwas)", type="primary"):
-            st.session_state["compare_strategies"] = True
-        if st.session_state.get("compare_strategies"):
-            rows = []
-            for sname, smix in STRATEGIES.items():
-                smix = mix if smix is None else smix
-                skey = tuple(sorted((k, float(v)) for k, v in smix.items()))
-                out = cached_walk_forward(prices, bench_prices.iloc[:, 0], tuple(h), budget, sim_years,
-                                          rf, limit, w_max, months, skey, tuple(core), first_sim)
-                s = analytics.compare_stats(out[0], out[1], rf).loc["Sparplan-Kompass"]
-                rows.append(s.rename(sname))
-            comp = pd.DataFrame(rows)
-            comp.loc["Ohne Kompass"] = O
-            comp.loc[f"Markt ({bench_name})"] = M
-            st.plotly_chart(charts.strategy_scatter(comp), width="stretch")
-            st.dataframe(comp[["Endwert €", "Rendite p.a. %", "Größter Einbruch %", "Schlechtestes Jahr %",
-                               "Schrecktag %", "Sharpe"]], width="stretch",
-                         column_config={c: st.column_config.NumberColumn(format="%.0f" if "€" in c else "%.2f")
-                                        for c in comp.columns})
-            st.caption("Oben rechts ist besser: mehr Rendite bei kleinerem Einbruch.")
+            with st.expander(f"Krisen im Einzelnen: in {crisis_wins} von {len(crises)} weniger Verlust"):
+                st.plotly_chart(charts.crisis_compare_bar(crises, f"Markt ({bench_name})"), width="stretch")
+        with st.expander("Alle Kennzahlen zum Nachprüfen"):
+            st.dataframe(stats.rename(index={"Markt": f"Markt ({bench_name})"}), width="stretch",
+                         column_config={c: st.column_config.NumberColumn(
+                             format="%.0f" if "€" in c or "Monate" in c else "%.2f") for c in stats.columns})
+        with st.expander("Strategien vergleichen: Sharpe-Fokus, Rendite-Fokus, 50/35/15"):
+            st.caption("Gleiche Regeln, gleiche Kurse, gleicher Zeitraum. Nur die Strategie ändert sich.")
+            if st.button("Vergleich starten (dauert etwas)", type="primary"):
+                st.session_state["compare_strategies"] = True
+            if st.session_state.get("compare_strategies"):
+                rows = []
+                for sname, smix in STRATEGIES.items():
+                    smix = mix if smix is None else smix
+                    skey = tuple(sorted((k, float(v)) for k, v in smix.items()))
+                    out = cached_walk_forward(prices, bench_prices.iloc[:, 0], tuple(h), budget, sim_years,
+                                              rf, limit, w_max, months, skey, tuple(core), first_sim)
+                    srow = analytics.compare_stats(out[0], out[1], rf).loc["Sparplan-Kompass"]
+                    rows.append(srow.rename(sname))
+                comp = pd.DataFrame(rows)
+                comp.loc["Ohne Kompass"] = O
+                comp.loc[f"Markt ({bench_name})"] = M
+                st.plotly_chart(charts.strategy_scatter(comp), width="stretch")
+                st.dataframe(comp[["Endwert €", "Rendite p.a. %", "Größter Einbruch %",
+                                   "Schlechtestes Jahr %", "Schrecktag %", "Sharpe"]], width="stretch",
+                             column_config={c: st.column_config.NumberColumn(
+                                 format="%.0f" if "€" in c else "%.2f") for c in comp.columns})
+                st.caption("Oben rechts ist besser: mehr Rendite bei kleinerem Einbruch.")
 
     limiting = max(tickers, key=lambda t: etf_start[t])
     with st.expander(f"Datenquellen: gemeinsame Kurshistorie ab {prices.index[0]:%m/%Y}"

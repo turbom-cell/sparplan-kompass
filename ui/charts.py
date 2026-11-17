@@ -215,3 +215,71 @@ def strategy_scatter(stats: pd.DataFrame) -> go.Figure:
     fig.update_layout(showlegend=False, xaxis_title="Größter Einbruch in % (weiter rechts = weniger Absturz)",
                       yaxis_title="Rendite p.a. in %")
     return _base(fig, 420)
+
+
+# --------------------------------------------------------------------------- Kernbotschaft
+def money_and_calm(values: pd.DataFrame, rets: pd.DataFrame, market_label: str,
+                   top_title: str, bottom_title: str,
+                   crises: dict[str, tuple[str, str]]) -> go.Figure:
+    """Oben: Depotwert in € (gleich viel Geld?). Unten: Abstand zum Höchststand (ruhiger?)."""
+    from plotly.subplots import make_subplots
+
+    dd = (1.0 + rets).cumprod()
+    dd = (dd / dd.cummax() - 1.0) * 100
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.09,
+                        row_heights=[0.56, 0.44], subplot_titles=(top_title, bottom_title))
+    fig.add_scatter(x=values.index, y=values["Eingezahlt"], name="Eingezahlt", row=1, col=1,
+                    line=dict(color="#cbd5e1", width=1.4, dash="dot"),
+                    hovertemplate="%{y:,.0f} €<extra>Eingezahlt</extra>")
+    fig.add_scatter(x=values.index, y=values["Markt"], name=market_label, row=1, col=1,
+                    line=dict(color=C_ALT, width=1.4), opacity=0.55,
+                    hovertemplate="%{y:,.0f} €<extra>" + market_label + "</extra>")
+    fig.add_scatter(x=values.index, y=values["Ohne Kompass"], name="Ohne Kompass", row=1, col=1,
+                    line=dict(color=C_NOW, width=2.6),
+                    hovertemplate="%{y:,.0f} €<extra>Ohne Kompass</extra>")
+    fig.add_scatter(x=values.index, y=values["Sparplan-Kompass"], name="Sparplan-Kompass", row=1, col=1,
+                    line=dict(color=C_GOAL, width=3.2),
+                    hovertemplate="%{y:,.0f} €<extra>Sparplan-Kompass</extra>")
+    fig.add_scatter(x=dd.index, y=dd["Ohne Kompass"], showlegend=False, row=2, col=1,
+                    line=dict(color=C_NOW, width=1.6), fill="tozeroy", fillcolor="rgba(148,163,184,.30)",
+                    hovertemplate="%{y:.1f} %<extra>Ohne Kompass</extra>")
+    fig.add_scatter(x=dd.index, y=dd["Sparplan-Kompass"], showlegend=False, row=2, col=1,
+                    line=dict(color=C_GOAL, width=2.2), fill="tozeroy", fillcolor="rgba(37,99,235,.18)",
+                    hovertemplate="%{y:.1f} %<extra>Sparplan-Kompass</extra>")
+    for name, (start, end) in crises.items():
+        if pd.Timestamp(end) < values.index[0] or pd.Timestamp(start) > values.index[-1]:
+            continue
+        fig.add_vrect(x0=max(pd.Timestamp(start), values.index[0]), x1=pd.Timestamp(end),
+                      fillcolor="#e11d48", opacity=0.06, line_width=0, row="all", col=1)
+    fig.update_yaxes(title_text="Depotwert in €", row=1, col=1)
+    fig.update_yaxes(title_text="unter Höchststand in %", row=2, col=1)
+    fig.update_layout(hovermode="x unified")
+    fig.update_annotations(font=dict(size=15, color=C_INK, family=FONT), xanchor="left", x=0)
+    _base(fig, 640)
+    fig.update_layout(margin=dict(l=8, r=8, t=70, b=8),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.06, x=0))
+    return fig
+
+
+def calm_bars(stats: pd.DataFrame) -> go.Figure:
+    """Ruhe-Bilanz: je kürzer der Balken, desto ruhiger. Kompass gegen ohne Kompass."""
+    rows = [("Größter Einbruch", "Größter Einbruch %", "%"),
+            ("Schlechtestes Jahr", "Schlechtestes Jahr %", "%"),
+            ("Schwankung pro Jahr", "Schwankung p.a. %", "%"),
+            ("Verlust am Schrecktag", "Schrecktag %", "%"),
+            ("Längste Durststrecke", "Längste Durststrecke Monate", "Monate")]
+    labels = [r[0] for r in rows]
+    fig = go.Figure()
+    for name, color in (("Ohne Kompass", C_NOW), ("Sparplan-Kompass", C_GOAL)):
+        vals = [abs(float(stats.loc[name, col])) for _, col, _ in rows]
+        text = [f"{v:.0f} Mon." if unit == "Monate" else f"{v:.1f} %".replace(".", ",")
+                for v, (_, _, unit) in zip(vals, rows)]
+        # Balken relativ zu "ohne Kompass" = 100, damit verschiedene Einheiten vergleichbar sind
+        base = [abs(float(stats.loc["Ohne Kompass", col])) or 1.0 for _, col, _ in rows]
+        rel = [v / b * 100 for v, b in zip(vals, base)]
+        fig.add_bar(y=labels, x=rel, orientation="h", name=name, marker_color=color,
+                    marker_cornerradius=6, text=text, textposition="outside",
+                    hovertemplate="%{y}: %{text}<extra>" + name + "</extra>")
+    fig.update_layout(barmode="group", xaxis=dict(visible=False, range=[0, 135]),
+                      yaxis=dict(autorange="reversed"), bargap=0.3)
+    return _base(fig, 380)
