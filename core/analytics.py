@@ -239,3 +239,25 @@ def crisis_from_rets(rets: pd.DataFrame) -> pd.DataFrame:
             row[col] = drawdown(idx) * 100
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def project(values: pd.DataFrame, rates: dict[str, float], budget: float, years: int) -> pd.DataFrame:
+    """Prognose: jedes Depot wächst ab heute mit seiner Durchschnittsrendite weiter.
+
+    Monatlich: Wert × (1 + Rendite p.a.)^(1/12), dann kommt die Sparrate dazu (Zinseszins).
+    `rates` je Spalte als Dezimalzahl (0.08 = 8 % p.a.). "Eingezahlt" wächst nur um die Sparrate.
+    Erste Zeile = letzter echter Wert, damit die Linien nahtlos anschließen.
+    """
+    last_day = values.index[-1]
+    dates = pd.date_range(last_day, periods=years * 12 + 1, freq=pd.DateOffset(months=1))
+    out = {}
+    for col, r in rates.items():
+        v, path = float(values[col].iloc[-1]), []
+        for i in range(len(dates)):
+            if i:
+                v = v * (1.0 + r) ** (1 / 12) + budget
+            path.append(v)
+        out[col] = path
+    paid = float(values["Eingezahlt"].iloc[-1])
+    out["Eingezahlt"] = [paid + i * budget for i in range(len(dates))]
+    return pd.DataFrame(out, index=dates)

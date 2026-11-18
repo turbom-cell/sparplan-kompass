@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from core import analytics
 from core.analytics import blind_test, crisis_table
 from core.data_service import clean_prices, load_prices, to_returns
 from core.optimizer import (cvar, diluted_weights, earliest_month, min_cvar_weights,
@@ -223,3 +224,13 @@ def test_search_kind_erkennt_isin_wkn_und_tippfehler():
     assert search_kind("IE00BKT2S34") == "bad_isin"      # 11 Zeichen
     assert search_kind("A0S9GB") == "wkn" and search_kind("716460") == "wkn"
     assert search_kind("Rheinmetall") == "text"
+
+
+def test_prognose_zinseszins_und_sparrate():
+    idx = pd.date_range("2020-01-01", periods=3, freq="D")
+    values = pd.DataFrame({"A": [100.0, 100.0, 1000.0], "Eingezahlt": [1000.0] * 3}, index=idx)
+    fut = analytics.project(values, {"A": 0.10}, budget=0.0, years=2)
+    assert len(fut) == 25 and fut["A"].iloc[0] == 1000.0
+    assert abs(fut["A"].iloc[-1] - 1000 * 1.1 ** 2) < 1e-6            # Zinseszins
+    fut = analytics.project(values, {"A": 0.0}, budget=100.0, years=1)
+    assert abs(fut["A"].iloc[-1] - 2200.0) < 1e-6 and fut["Eingezahlt"].iloc[-1] == 2200.0

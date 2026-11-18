@@ -696,14 +696,49 @@ with tab_proof:
                 card("Endwert", K["Endwert €"], H["Endwert €"], eur, False, theme.BLUE),
                 card("Rendite pro Jahr", K["Rendite p.a. %"], H["Rendite p.a. %"], pct, False, theme.BLUE),
             ])
+        f1, f2 = st.columns([1, 1], gap="large")
+        with f1:
+            fc_years = st.segmented_control(
+                "Prognose in die Zukunft", [0, 10, 20, 30], default=10, key="forecast_years",
+                format_func=lambda y: "aus" if y == 0 else f"{y} Jahre",
+                help="Beide Depots wachsen ab heute mit derselben Sparrate weiter. Der Kompass hält "
+                     "dabei sein neues Ziel-Depot, einfach halten bleibt beim alten Verhältnis.") or 0
+        with f2:
+            fc_mode = st.segmented_control(
+                "Renditeannahme", ["Vorsichtig (7 % Basis)", "Wie im Rückblick"],
+                default="Vorsichtig (7 % Basis)", key="forecast_mode",
+                help="Vorsichtig: einfach halten wächst mit 7 % pro Jahr (langfristiger Schnitt des "
+                     "Weltaktienmarkts), der Kompass mit 7 % plus seinem Vorsprung aus dem Rückblick. "
+                     "Wie im Rückblick: beide mit ihrer tatsächlichen Durchschnittsrendite im "
+                     "gewählten Zeitraum.") or "Vorsichtig (7 % Basis)"
+        forecast = None
+        if fc_years:
+            r_k, r_h = K["Rendite p.a. %"] / 100, H["Rendite p.a. %"] / 100
+            if fc_mode.startswith("Vorsichtig"):
+                r_k, r_h = 0.07 + (r_k - r_h), 0.07
+            rates = {KOMPASS: r_k, HOLD: r_h}
+            forecast = analytics.project(values, rates, budget, int(fc_years))
         st.plotly_chart(charts.money_and_calm(
             values, rets, "",
             f"{money_word}: Depotwert in € mit Kompass und beim einfachen Halten",
             f"{risk_word}: so tief lag das Depot jeweils unter seinem Höchststand (in %)",
-            analytics.CRISES), width="stretch")
+            analytics.CRISES, forecast), width="stretch")
         st.caption("Oben: gleiche Einzahlungen, Depotwert über die Zeit. Unten: Die blaue Fläche "
                    "(Kompass) ist kleiner als die graue (einfach halten) – das Depot fiel in Krisen "
                    "weniger tief. Rot hinterlegt: Krisenphasen.")
+        if forecast is not None:
+            fk, fh = forecast[KOMPASS].iloc[-1], forecast[HOLD].iloc[-1]
+            gap = fk - fh
+            st.caption(
+                f"**Prognose (gestrichelt):** Beide Depots wachsen ab heute mit gleichbleibender "
+                f"Durchschnittsrendite weiter – Kompass {pct(rates[KOMPASS] * 100, 2)} pro Jahr, einfach "
+                f"halten {pct(rates[HOLD] * 100, 2)} pro Jahr – und bekommen weiter {eur(budget)} im Monat. "
+                f"In {fc_years} Jahren: **{eur(fk)} statt {eur(fh)}**, "
+                + (f"also **{eur(gap)} mehr** durch den Zinseszins." if gap > 0 else
+                   f"also {eur(-gap)} weniger – der Preis für das ruhigere Depot." if gap < 0 else
+                   "also gleich viel.")
+                + " Die Prognose ist eine Rechnung mit Durchschnittswerten, keine Garantie: echte "
+                  "Kurse schwanken, und beim Kompass fallen die Rückgänge auf dem Weg kleiner aus.")
         if use_dip and equity.any():
             theme.section("Nachkaufen im Rückblick", "Wann der Kompass mehr gekauft hat",
                           "Jeder Kasten ist ein Monat. Je röter, desto mehr Sparrate ging an diesem "

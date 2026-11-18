@@ -220,8 +220,12 @@ def strategy_scatter(stats: pd.DataFrame) -> go.Figure:
 # --------------------------------------------------------------------------- Kernbotschaft
 def money_and_calm(values: pd.DataFrame, rets: pd.DataFrame, market_label: str,
                    top_title: str, bottom_title: str,
-                   crises: dict[str, tuple[str, str]]) -> go.Figure:
-    """Oben: Depotwert in € (gleich viel Geld?). Unten: Abstand zum Höchststand (ruhiger?)."""
+                   crises: dict[str, tuple[str, str]],
+                   forecast: pd.DataFrame | None = None) -> go.Figure:
+    """Oben: Depotwert in € (gleich viel Geld?). Unten: Abstand zum Höchststand (ruhiger?).
+
+    `forecast`: optionale Prognose (gestrichelt, hinterlegt) im oberen Teil, ab dem letzten echten Tag.
+    """
     from plotly.subplots import make_subplots
 
     dd = (1.0 + rets).cumprod()
@@ -259,6 +263,23 @@ def money_and_calm(values: pd.DataFrame, rets: pd.DataFrame, market_label: str,
     _base(fig, 640)
     fig.update_layout(margin=dict(l=8, r=8, t=70, b=8),
                       legend=dict(orientation="h", yanchor="bottom", y=1.06, x=0))
+    if forecast is not None and len(forecast) > 1:
+        x0, x1 = forecast.index[0], forecast.index[-1]
+        fig.add_vrect(x0=x0, x1=x1, fillcolor="#6366f1", opacity=0.06, line_width=0, row=1, col=1)
+        fig.add_annotation(x=x0, y=1, yref="y domain", xref="x", text="  Prognose →", showarrow=False,
+                           xanchor="left", yanchor="top", font=dict(size=12, color="#4f46e5"))
+        for col, color, width in (("Eingezahlt", "#cbd5e1", 1.4), ("Einfach halten", C_NOW, 2.2),
+                                  ("Sparplan-Kompass", C_GOAL, 2.8)):
+            fig.add_scatter(x=forecast.index, y=forecast[col], showlegend=False, row=1, col=1,
+                            line=dict(color=color, width=width, dash="dash" if col != "Eingezahlt" else "dot"),
+                            hovertemplate="%{y:,.0f} €<extra>Prognose " + col + "</extra>")
+        k, h = forecast["Sparplan-Kompass"].iloc[-1], forecast["Einfach halten"].iloc[-1]
+        fig.add_annotation(x=x1, y=k, xref="x", yref="y", text=f"<b>{k:,.0f} €</b>".replace(",", "."),
+                           showarrow=False, xanchor="right", yanchor="bottom" if k >= h else "top",
+                           font=dict(size=12, color=C_GOAL))
+        fig.add_annotation(x=x1, y=h, xref="x", yref="y", text=f"{h:,.0f} €".replace(",", "."),
+                           showarrow=False, xanchor="right", yanchor="top" if k >= h else "bottom",
+                           font=dict(size=12, color="#475569"))
     return fig
 
 
