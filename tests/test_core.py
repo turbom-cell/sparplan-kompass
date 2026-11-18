@@ -214,3 +214,12 @@ def test_dip_buying_redistributes_same_budget():
     f = dip_factors(falling)
     assert f["A"].iloc[-1] == pytest.approx(2.0)            # unter allen drei Linien
     assert f["A"].iloc[30] == pytest.approx(1.0)            # Linien noch nicht berechenbar
+
+
+def test_search_kind_erkennt_isin_wkn_und_tippfehler():
+    from core.data_service import isin_valid, search_kind
+    assert isin_valid("IE00B4L5Y983") and isin_valid("DE000EWG2LD7") and isin_valid("US0378331005")
+    assert not isin_valid("IE00B4L5Y984")
+    assert search_kind("IE00BKT2S34") == "bad_isin"      # 11 Zeichen
+    assert search_kind("A0S9GB") == "wkn" and search_kind("716460") == "wkn"
+    assert search_kind("Rheinmetall") == "text"

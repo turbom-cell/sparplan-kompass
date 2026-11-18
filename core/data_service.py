@@ -10,6 +10,7 @@ von `scripts/update_sample.py` erzeugt.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -104,8 +105,19 @@ def display_name(ticker: str) -> str:
     return CATALOG.get(ticker, (CUSTOM_NAMES.get(ticker, ticker), 0, ""))[0]
 
 
+NON_EQUITY_WORDS = ("gold", "silber", "silver", "metal", "bond", "anleihe", "treasury", "aggregate",
+                    "govt", "government", "corporate", "geldmarkt", "money market", "euwax", "rohstoff",
+                    "commodit", "bitcoin", "krypto", "crypto")
+
+
 def default_teilfreistellung(ticker: str) -> int:
-    return CATALOG.get(ticker, (ticker, 30, ""))[1]
+    """Aktien-ETFs 30 %, sonst 0 %. Gesuchte Titel: an Namen wie Gold/Anleihe erkennen."""
+    if ticker in CATALOG:
+        return CATALOG[ticker][1]
+    name = CUSTOM_NAMES.get(ticker, "").lower()
+    if ticker.endswith(("-USD", "-EUR")) or any(w in name for w in NON_EQUITY_WORDS):
+        return 0
+    return 30
 
 
 def group_of(ticker: str) -> str:
@@ -245,7 +257,8 @@ def load_prices(tickers: list[str], start_year: int = 2000, allow_live: bool = T
     return _finish(snap, tickers, start, "snapshot" if known else "live", use_proxies)
 
 
-EUR_SUFFIXES = (".DE", ".F", ".AS", ".PA", ".MI", ".MC", ".VI", ".BR", ".HE", ".IR", ".LS")
+EUR_SUFFIXES = (".DE", ".F", ".SG", ".MU", ".DU", ".HM", ".BE", ".HA", ".AS", ".PA", ".MI", ".MC",
+                ".VI", ".BR", ".HE", ".IR", ".LS")
 
 
 def currency_of(ticker: str) -> str:
@@ -278,43 +291,193 @@ def _custom_prices(tickers: list[str]) -> pd.DataFrame:
 
 
 SEARCH_TYPES = {"ETF": "ETF", "EQUITY": "Aktie", "MUTUALFUND": "Fonds", "CRYPTOCURRENCY": "Krypto"}
+# OpenFIGI-Börsencode -> Yahoo-Endung und Anzeigename (deutsche Börsen zuerst)
+FIGI_EXCHANGES = {"GY": (".DE", "XETRA"), "GF": (".F", "Frankfurt"), "GS": (".SG", "Stuttgart"),
+                  "GM": (".MU", "München"), "GD": (".DU", "Düsseldorf"), "GH": (".HM", "Hamburg"),
+                  "GB": (".BE", "Berlin"), "GI": (".HA", "Hannover"), "NA": (".AS", "Amsterdam"),
+                  "FP": (".PA", "Paris"), "IM": (".MI", "Mailand"), "SM": (".MC", "Madrid"),
+                  "BB": (".BR", "Brüssel"), "AV": (".VI", "Wien"), "US": ("", "USA")}
+ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
+WKN_RE = re.compile(r"^[A-Z0-9]{6}$")
 
 
-def search_titles(query: str, limit: int = 12, _retry: bool = True) -> list[dict]:
-    """Yahoo-Finance-Suche nach Name, Kürzel oder ISIN.
+def isin_valid(isin: str) -> bool:
+    """Prüfziffer nach ISO 6166 (Luhn über die in Zahlen umgewandelten Zeichen)."""
+    if not ISIN_RE.match(isin):
+        return False
+    digits = "".join(str(int(c, 36)) for c in isin[:-1])
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        n = int(d) * (2 if i % 2 == 0 else 1)
+        total += n // 10 + n % 10
+    return (10 - total % 10) % 10 == int(isin[-1])
 
-    Liefert nur Titel, deren Kurs sich in Euro rechnen lässt (Euro-Börsen, US-Börsen, Krypto in USD)
-    und sortiert Euro-Börsen (Xetra zuerst) nach vorne.
-    """
-    query = query.strip()
-    if len(query) < 2:
+
+def search_kind(query: str) -> str:
+    """Was wurde eingegeben: ISIN, (fast-)ISIN mit Tippfehler, WKN oder Text?"""
+    q = query.strip().upper().replace(" ", "")
+    if len(q) == 12 and q[:2].isalpha() and q.isalnum():
+        return "isin" if isin_valid(q) else "bad_isin"
+    if 10 <= len(q) <= 13 and q[:2] in ("DE", "IE", "LU", "FR", "NL", "AT", "US", "GB", "CH", "JE") \
+            and q[2:4].isdigit() and q.isalnum():
+        return "bad_isin"
+    if WKN_RE.match(q) and any(c.isdigit() for c in q):
+        return "wkn"
+    return "text"
+
+
+def _yahoo_search(query: str) -> list[dict]:
+    import yfinance as yf
+    return yf.Search(query, max_results=25, news_count=0).quotes
+
+
+def _figi(id_type: str, value: str) -> list[dict]:
+    """OpenFIGI (kostenlos, ohne Schlüssel): alle Börsennotierungen zu ISIN oder WKN."""
+    import json
+    import urllib.request
+    req = urllib.request.Request("https://api.openfigi.com/v3/mapping",
+                                 data=json.dumps([{"idType": id_type, "idValue": value}]).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)[0].get("data", [])
+
+
+def _has_prices(symbols: list[str]) -> list[str]:
+    """Welche Yahoo-Kürzel haben wirklich aktuelle Kurse?"""
+    if not symbols:
         return []
-    try:
-        import yfinance as yf
-        quotes = yf.Search(query, max_results=25, news_count=0).quotes
-    except Exception:
+    import yfinance as yf
+    raw = yf.download(symbols, period="1mo", progress=False, auto_adjust=True, threads=True)
+    if raw is None or raw.empty:
         return []
+    close = raw["Close"] if "Close" in raw else raw
+    if isinstance(close, pd.Series):
+        close = close.to_frame(symbols[0])
+    return [s for s in symbols if s in close.columns and close[s].notna().sum() >= 3]
+
+
+def _suffix(sym: str) -> str:
+    return sym[sym.rfind("."):] if "." in sym else ""
+
+
+def _from_figi(id_type: str, value: str) -> list[dict]:
+    rank = {v[0]: i for i, v in enumerate(FIGI_EXCHANGES.values())}
+    cands: dict[str, dict] = {}
+    _figi_rows = _figi(id_type, value)
+    for d in _figi_rows:
+        code, ticker = d.get("exchCode"), str(d.get("ticker", "")).upper()
+        if code not in FIGI_EXCHANGES or not ticker or " " in ticker or "/" in ticker:
+            continue
+        suffix, exch = FIGI_EXCHANGES[code]
+        sym = ticker + suffix
+        fund = "Fund" in str(d.get("securityType2", "")) or "ETP" in str(d.get("securityType", ""))
+        cands.setdefault(sym, {"ticker": sym, "name": str(d.get("name") or sym).title(),
+                               "type": "ETF/Fonds" if fund else "Aktie", "exchange": exch,
+                               "currency": "EUR" if suffix else "USD"})
+    # Bloomberg-Kürzel weichen oft vom Börsenkürzel ab (iShares DAX: DAXEX, Xetra: EXS1).
+    # Daher aus allen Varianten Xetra-/Frankfurt-Kandidaten bilden und auf echte Kurse prüfen.
+    bases: dict[str, None] = {}
+    for d in _figi_rows:
+        t = str(d.get("ticker", "")).upper()
+        if not t or " " in t or "/" in t:
+            continue
+        for cut in ("EUR", "USD", "CHF", "GBP"):
+            if t.endswith(cut) and len(t) > len(cut) + 2:
+                t = t[: -len(cut)]
+        bases[t] = None
+        if len(t) == 5 and t[-1] in "DNMZ":
+            bases[t[:-1]] = None
+    template = next(iter(cands.values()), None) or (_figi_rows and {
+        "name": str(_figi_rows[0].get("name") or value).title(), "type": "Titel"})
+    for b in list(bases)[:12]:
+        for suffix, exch in ((".DE", "XETRA"), (".F", "Frankfurt")):
+            if b + suffix not in cands and template:
+                cands[b + suffix] = {**template, "ticker": b + suffix, "exchange": exch, "currency": "EUR"}
+    syms = sorted(cands, key=lambda s: rank.get(_suffix(s), 99))[:24]
+    ok = set(_has_prices(syms))
+    hits = [cands[s] for s in syms if s in ok][:8]
+    if hits:   # schöneren, vollständigen Namen von Yahoo holen
+        try:
+            q = next((q for q in _yahoo_search(hits[0]["ticker"]) if q.get("longname")), None)
+            if q:
+                for h in hits:
+                    h["name"] = q["longname"]
+        except Exception:
+            pass
+    return hits
+
+
+def _from_yahoo(query: str, retry: bool = True) -> list[dict]:
+    quotes = _yahoo_search(query)
     hits = []
     for q in quotes:
         sym, kind = str(q.get("symbol", "")).upper(), q.get("quoteType", "")
         if not sym or kind not in SEARCH_TYPES:
             continue
-        cur = "USD" if kind == "CRYPTOCURRENCY" and sym.endswith("-USD") else               "EUR" if kind == "CRYPTOCURRENCY" and sym.endswith("-EUR") else currency_of(sym)
-        if kind == "CRYPTOCURRENCY" and cur == "USD":
-            pass
-        elif cur not in ("EUR", "USD") or "-" in sym or "=" in sym:
-            continue
+        if kind == "CRYPTOCURRENCY":
+            if not sym.endswith(("-USD", "-EUR")):
+                continue
+            cur = sym[-3:]
+        else:
+            cur = currency_of(sym)
+            if cur not in ("EUR", "USD") or "-" in sym or "=" in sym:
+                continue
         name = (q.get("longname") or q.get("shortname") or sym).strip()
         hits.append({"ticker": sym, "name": name, "type": SEARCH_TYPES[kind],
                      "exchange": q.get("exchDisp", ""), "currency": cur})
-    if not hits and quotes and _retry:
-        # ISIN liefert oft nur die Londoner Notierung: mit deren Namen nach Euro-Börsen weitersuchen
+    if not hits and quotes and retry and search_kind(query) == "isin":
+        # ISIN liefert bei Yahoo oft nur die Londoner Notierung: mit deren Namen weitersuchen
         name = quotes[0].get("longname") or quotes[0].get("shortname")
         if name:
-            return search_titles(name, limit, _retry=False)
-    rank = {".DE": 0}
-    hits.sort(key=lambda h: (rank.get(h["ticker"][-3:], 1 if h["currency"] == "EUR" else 2)))
-    return hits[:limit]
+            return _from_yahoo(name, retry=False)
+    return hits
+
+
+def search_titles(query: str, limit: int = 12) -> tuple[list[dict], str]:
+    """Suche nach Name, Kürzel, ISIN oder WKN. Gibt (Treffer, Hinweis) zurück.
+
+    Name/Kürzel: Yahoo Finance. ISIN/WKN: zusätzlich OpenFIGI (alle Börsennotierungen weltweit),
+    geprüft auf echte Yahoo-Kurse. Nur Titel, die sich in Euro rechnen lassen; Euro-Börsen vorn.
+    """
+    query = query.strip()
+    if len(query) < 2:
+        return [], ""
+    kind = search_kind(query)
+    if kind == "bad_isin":
+        return [], ("Das sieht nach einer ISIN aus, ist aber keine gültige: Eine ISIN hat genau "
+                    "12 Zeichen und eine passende Prüfziffer. Bitte auf Tippfehler prüfen.")
+    key = query.upper().replace(" ", "")
+    hits, errors = [], 0
+    if kind in ("isin", "wkn"):
+        try:
+            hits = _from_figi("ID_ISIN" if kind == "isin" else "ID_WERTPAPIER", key)
+        except Exception:
+            errors += 1
+    try:
+        seen = {h["ticker"] for h in hits}
+        hits += [h for h in _from_yahoo(key if kind != "text" else query) if h["ticker"] not in seen]
+    except Exception:
+        errors += 1
+    if not hits and kind == "text" and len(query) <= 15 and " " not in query:
+        sym = query.upper()   # Yahoo-Kürzel direkt probieren, z. B. EWG2.SG
+        try:
+            if currency_of(sym) in ("EUR", "USD") and _has_prices([sym]):
+                hits = [{"ticker": sym, "name": sym, "type": "Titel", "exchange": "",
+                         "currency": currency_of(sym)}]
+        except Exception:
+            pass
+    hits.sort(key=lambda h: 0 if h["ticker"].endswith(".DE") else 1 if h["currency"] == "EUR" else 2)
+    if kind in ("isin", "wkn") and hits:
+        # ISIN/WKN = ein Wertpapier: überall denselben, vollständigsten Namen zeigen
+        best = max((h["name"] for h in hits), key=lambda n: (not n.isupper() and not n.istitle(), len(n)))
+        for h in hits:
+            h["name"] = best
+    note = ""
+    if not hits:
+        note = ("Die Suche ist gerade nicht erreichbar, bitte gleich nochmal versuchen." if errors >= 2 else
+                "Nichts gefunden, das an einer Euro- oder US-Börse mit Kursen gehandelt wird. "
+                "Probiere Name, ISIN, WKN oder das Yahoo-Kürzel (z. B. SAP.DE).")
+    return hits[:limit], note
 
 
 def to_returns(prices: pd.DataFrame) -> pd.DataFrame:

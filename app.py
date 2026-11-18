@@ -112,7 +112,7 @@ def cached_walk_forward(prices: pd.DataFrame, bench: pd.Series, holdings: tuple[
                                   not_before=not_before, dip=dip, dip_mask=np.array(dip_mask))
 
 
-@st.cache_data(ttl=86400, show_spinner="Suche …")
+@st.cache_data(ttl=86400, show_spinner="Suche bei Yahoo Finance und OpenFIGI …")
 def cached_search(query: str):
     return search_titles(query)
 
@@ -150,15 +150,18 @@ def add_extra(hit: dict, key: str):
 
 def search_box() -> dict | None:
     """Suchfeld für jeden Titel von Yahoo Finance: Name, Kürzel oder ISIN."""
-    query = st.text_input("🔎 Titel suchen", placeholder="Name, Kürzel oder ISIN – z. B. Vanguard All-World, "
-                          "Rheinmetall, IE00B4L5Y983, Bitcoin",
-                          help="Sucht bei Yahoo Finance in ETFs, Aktien, Fonds und Krypto. "
-                               "Euro-Börsen (Xetra) stehen oben, US-Werte rechnet der Kompass in Euro um.")
+    query = st.text_input("🔎 Titel suchen", placeholder="Name, ISIN, WKN oder Kürzel – z. B. Vanguard All-World, "
+                          "IE00B4L5Y983, A0S9GB, Rheinmetall",
+                          help="Sucht ETFs, ETCs, Aktien, Fonds und Krypto bei Yahoo Finance und im "
+                               "ISIN-Verzeichnis OpenFIGI. Euro-Börsen (Xetra) stehen oben, US-Werte "
+                               "rechnet der Kompass in Euro um.")
     if not query.strip():
         return None
-    hits = cached_search(query.strip())
+    hits, note = cached_search(query.strip())
     if not hits:
-        st.caption("Nichts gefunden. Probiere den Namen, das Kürzel (z. B. SAP.DE) oder die ISIN.")
+        st.caption(note)
+        if "nicht erreichbar" in note:
+            cached_search.clear()
         return None
     pick = st.selectbox(f"{len(hits)} Treffer", range(len(hits)), label_visibility="collapsed",
                         format_func=lambda i: f"{hits[i]['name']} · {hits[i]['ticker']} · "
