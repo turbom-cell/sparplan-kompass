@@ -45,7 +45,6 @@ PRESETS: dict[str, tuple[list[tuple[str, int, int, bool]], list[str]]] = {
     "Langjähriger Sparer (60.000 €)": (
         [("SXRV.DE", 26000, 9000, True), ("SXR8.DE", 18000, 9500, False),
          ("EUNL.DE", 12000, 8000, False), ("XDWT.DE", 4000, 2000, False)], DIVERSIFIERS),
-    "Berufseinsteiger (ein ETF)": ([("SXR8.DE", 2500, 2100, False)], DIVERSIFIERS),
     "Leeres Depot zum Selberbauen": ([("EUNL.DE", 1000, 1000, True)], []),
 }
 LABEL = {t: f"{name} · {t}" for t, (name, _, _) in CATALOG.items()}
