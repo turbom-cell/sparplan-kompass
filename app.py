@@ -5,6 +5,9 @@ Diese Datei enthält nur die Oberfläche. Gerechnet wird in `core/`, gezeichnet 
 """
 from __future__ import annotations
 
+import json
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -127,16 +130,101 @@ def remember(hit: dict) -> str:
     return t
 
 
+DEPOT_COLS = ["Position", "Bestand €", "Einstand €", "Kern"]
+
+
+def depot_frame(rows: list[tuple[str, float, float, bool]]) -> pd.DataFrame:
+    """Tabelle für den Editor: Ticker werden zu Anzeige-Labels, dazu die Spalte zum Entfernen."""
+    return pd.DataFrame({"Position": [label_of(t) for t, _, _, _ in rows],
+                         "Bestand €": [float(b) for _, b, _, _ in rows],
+                         "Einstand €": [float(e) for _, _, e, _ in rows],
+                         "Kern": [bool(c) for _, _, _, c in rows],
+                         "Entfernen": [False] * len(rows)})
+
+
+def set_base(df: pd.DataFrame, extras: list[str] | None = None):
+    """Neue Ausgangstabelle für den Editor (neuer Schlüssel = Editor übernimmt sie sauber)."""
+    ss = st.session_state
+    old = ss.get(f"extras_{ss['base_ver']}", [])
+    ss["base_df"] = df.reset_index(drop=True)
+    ss["base_ver"] += 1
+    ss[f"extras_{ss['base_ver']}"] = list(old if extras is None else extras)
+
+
+def current_depot() -> pd.DataFrame:
+    """Ausgangstabelle plus alle Änderungen, die gerade im Editor gemacht wurden."""
+    ss = st.session_state
+    df = ss["base_df"].copy().reset_index(drop=True)
+    edits = ss.get(f"depot_{ss['base_ver']}") or {}
+    for i, change in edits.get("edited_rows", {}).items():
+        for col, val in change.items():
+            df.loc[int(i), col] = val
+    added = [r for r in edits.get("added_rows", []) if r]
+    if added:
+        df = pd.concat([df, pd.DataFrame(added)], ignore_index=True)
+    deleted = [int(i) for i in edits.get("deleted_rows", [])]
+    df = df.drop(index=[i for i in deleted if i in df.index]).reset_index(drop=True)
+    if "Entfernen" not in df:
+        df["Entfernen"] = False
+    df["Entfernen"] = df["Entfernen"].fillna(False).astype(bool)
+    return df
+
+
+def on_depot_edit():
+    """Haken bei „Entfernen“ gesetzt: Zeile sofort aus dem Depot nehmen."""
+    df = current_depot()
+    if df["Entfernen"].any():
+        gone = [str(p).split(" · ")[0] for p in df.loc[df["Entfernen"], "Position"]]
+        set_base(df[~df["Entfernen"]])
+        st.session_state["toast"] = "Entfernt: " + ", ".join(gone)
+
+
+def depot_file() -> str:
+    """Depot als JSON zum Herunterladen (bleibt beim Nutzer, auf dem Server wird nichts gespeichert)."""
+    ss = st.session_state
+    df = current_depot().dropna(subset=["Position"])
+    data = {"app": "Sparplan-Kompass", "version": 1, "gespeichert": date.today().isoformat(),
+            "sparrate": ss.get("budget", 500),
+            "positionen": [{"ticker": ticker_of(r["Position"]),
+                            "name": str(r["Position"]).split(" · ")[0],
+                            "bestand": float(r["Bestand €"] or 0),
+                            "einstand": float(r["Einstand €"] or 0),
+                            "kern": bool(r["Kern"])} for _, r in df.iterrows()],
+            "bausteine": [{"ticker": ticker_of(x), "name": x.split(" · ")[0]}
+                          for x in ss.get(f"extras_{ss['base_ver']}", [])]}
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def load_depot_file():
+    ss = st.session_state
+    f = ss.get("depot_upload")
+    if f is None:
+        return
+    try:
+        data = json.loads(f.getvalue().decode("utf-8"))
+        for item in data.get("positionen", []) + data.get("bausteine", []):
+            t = str(item["ticker"]).upper()
+            if t not in CATALOG:
+                remember({"ticker": t, "name": item.get("name", t)})
+        rows = [(str(p["ticker"]).upper(), float(p.get("bestand", 0)), float(p.get("einstand", 0)),
+                 bool(p.get("kern", False))) for p in data["positionen"]]
+        held = {r[0] for r in rows}
+        set_base(depot_frame(rows), [label_of(str(b["ticker"]).upper()) for b in data.get("bausteine", [])
+                                     if str(b["ticker"]).upper() not in held])
+        ss["budget"] = int(min(3000, max(50, round(float(data.get("sparrate", 500)) / 50) * 50)))
+        ss["toast"] = f"Depot geladen: {len(rows)} Positionen."
+    except Exception:
+        ss["toast_err"] = ("Die Datei konnte nicht gelesen werden. Bitte eine Datei wählen, "
+                           "die mit „Depot speichern“ erstellt wurde.")
+
+
 def add_to_depot(hit: dict):
     ss = st.session_state
     t = remember(hit)
-    df = ss.get("depot_last", ss["base_df"]).dropna(subset=["Position"])
+    df = current_depot().dropna(subset=["Position"])
     if label_of(t) not in set(df["Position"]):
-        df = pd.concat([df, pd.DataFrame({"Position": [label_of(t)], "Bestand €": [1000.0],
-                                          "Einstand €": [1000.0], "Kern": [False]})],
-                       ignore_index=True)
-    ss["base_df"], ss["base_ver"] = df, ss["base_ver"] + 1
-    ss[f"extras_{ss['base_ver']}"] = list(ss.get(f"extras_{ss['base_ver'] - 1}", []))
+        df = pd.concat([df, depot_frame([(t, 1000.0, 1000.0, False)])], ignore_index=True)
+    set_base(df)
     ss["toast"] = f"{hit['name']} steht jetzt in deinem Depot. Trage Bestand und Einstand ein."
 
 
@@ -173,6 +261,8 @@ hero_slot = st.container()
 tab_home, tab_depot, tab_proof = st.tabs(["Überblick", "Dein Depot", "Beweis"])
 if st.session_state.get("toast"):
     st.toast(st.session_state.pop("toast"), icon="✅")
+if st.session_state.get("toast_err"):
+    st.toast(st.session_state.pop("toast_err"), icon="⚠️")
 
 # =========================================================================== Eingaben
 with tab_depot:
@@ -187,10 +277,7 @@ with tab_depot:
     rows, preset_extras = PRESETS[preset]
     if ss.get("base_preset") != preset:           # neue Vorlage: Tabelle und Bausteine zurücksetzen
         ss["base_preset"], ss["base_ver"] = preset, ss.get("base_ver", 0) + 1
-        ss["base_df"] = pd.DataFrame({"Position": [label_of(t) for t, _, _, _ in rows],
-                                      "Bestand €": [float(b) for _, b, _, _ in rows],
-                                      "Einstand €": [float(e) for _, _, e, _ in rows],
-                                      "Kern": [bool(c) for _, _, _, c in rows]})
+        ss["base_df"] = depot_frame(rows)
         ss["extras_sel"] = [LABEL[t] for t in preset_extras if t not in [r[0] for r in rows]]
     extras_key = f"extras_{ss['base_ver']}"
     ss.setdefault(extras_key, list(ss["extras_sel"]))
@@ -208,7 +295,11 @@ with tab_depot:
         depot = st.data_editor(
             ss["base_df"],
             key=f"depot_{ss['base_ver']}", num_rows="dynamic", hide_index=True, width="stretch",
+            on_change=on_depot_edit,
+            column_order=["Entfernen", "Position", "Bestand €", "Einstand €", "Kern"],
             column_config={
+                "Entfernen": st.column_config.CheckboxColumn(
+                    "🗑️", width="small", help="Haken setzen: Position wird sofort aus dem Depot genommen."),
                 "Position": st.column_config.SelectboxColumn(options=options, required=True,
                                                              width="large"),
                 "Kern": st.column_config.CheckboxColumn(
@@ -218,9 +309,19 @@ with tab_depot:
                 "Einstand €": st.column_config.NumberColumn(
                     min_value=0, step=100, format="%.0f",
                     help="Was du insgesamt für die Position bezahlt hast (für die Steuerrechnung)")})
-        ss["depot_last"] = depot
-        budget = float(st.slider("Monatliche Sparrate in €", 50, 3000, 500, 50))
-    depot = depot.dropna(subset=["Position"]).drop_duplicates("Position")
+        st.caption("Neue Zeile: unten auf „+“ klicken oder oben suchen. Entfernen: Haken bei 🗑️ setzen.")
+        ss.setdefault("budget", 500)
+        budget = float(st.slider("Monatliche Sparrate in €", min_value=50, max_value=3000, step=50,
+                                 key="budget"))
+        sv, ld = st.columns(2)
+        sv.download_button("💾 Depot speichern", depot_file(), file_name="mein-depot.json",
+                           mime="application/json", width="stretch",
+                           help="Lädt dein Depot als kleine Datei auf dein Gerät. Gespeichert wird nur "
+                                "bei dir, nicht auf dem Server.")
+        with ld.popover("📂 Depot laden", width="stretch"):
+            st.file_uploader("Gespeicherte Depot-Datei wählen", type=["json"], key="depot_upload",
+                             on_change=load_depot_file)
+    depot = depot.dropna(subset=["Position"]).drop_duplicates("Position")[DEPOT_COLS].copy()
     depot["Kern"] = depot["Kern"].fillna(False).astype(bool)
     depot[["Bestand €", "Einstand €"]] = depot[["Bestand €", "Einstand €"]].fillna(0.0)
     held = [ticker_of(p) for p in depot["Position"]]
