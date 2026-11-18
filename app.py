@@ -10,8 +10,8 @@ import pandas as pd
 import streamlit as st
 
 from core import analytics, tax
-from core.data_service import (CATALOG, GROUPS, default_teilfreistellung, display_name, group_of,
-                               load_prices, to_returns)
+from core.data_service import (CATALOG, CUSTOM_NAMES, GROUPS, default_teilfreistellung, display_name,
+                               group_of, load_prices, search_titles, to_returns)
 from core.optimizer import cvar, diluted_weights, earliest_month, mix_weights, portfolio_stats
 from core.rebalancer import build_plan, sell_rebalance
 from ui import charts, theme
@@ -51,7 +51,8 @@ LABEL = {t: f"{name} · {t}" for t, (name, _, _) in CATALOG.items()}
 
 
 def label_of(ticker: str) -> str:
-    return LABEL.get(ticker, f"Eigener Titel · {ticker}")
+    return LABEL.get(ticker, f"{display_name(ticker)} · {ticker}" if ticker in CUSTOM_NAMES
+                     else f"Eigener Titel · {ticker}")
 
 
 def ticker_of(label: str) -> str:
@@ -111,30 +112,99 @@ def cached_walk_forward(prices: pd.DataFrame, bench: pd.Series, holdings: tuple[
                                   not_before=not_before, dip=dip, dip_mask=np.array(dip_mask))
 
 
+@st.cache_data(ttl=86400, show_spinner="Suche …")
+def cached_search(query: str):
+    return search_titles(query)
+
+
+def remember(hit: dict) -> str:
+    """Titel aus der Suche merken (Name für Tabellen und Grafiken)."""
+    t = hit["ticker"]
+    if t not in CATALOG:
+        CUSTOM_NAMES[t] = st.session_state.setdefault("own_names", {})[t] = hit["name"]
+        if t not in st.session_state["own"]:
+            st.session_state["own"].append(t)
+    return t
+
+
+def add_to_depot(hit: dict):
+    ss = st.session_state
+    t = remember(hit)
+    df = ss.get("depot_last", ss["base_df"]).dropna(subset=["Position"])
+    if label_of(t) not in set(df["Position"]):
+        df = pd.concat([df, pd.DataFrame({"Position": [label_of(t)], "Bestand €": [1000.0],
+                                          "Einstand €": [1000.0], "Kern": [False]})],
+                       ignore_index=True)
+    ss["base_df"], ss["base_ver"] = df, ss["base_ver"] + 1
+    ss[f"extras_{ss['base_ver']}"] = list(ss.get(f"extras_{ss['base_ver'] - 1}", []))
+    ss["toast"] = f"{hit['name']} steht jetzt in deinem Depot. Trage Bestand und Einstand ein."
+
+
+def add_extra(hit: dict, key: str):
+    ss = st.session_state
+    t = remember(hit)
+    if label_of(t) not in ss[key]:
+        ss[key] = ss[key] + [label_of(t)]
+    ss["toast"] = f"{hit['name']} darf jetzt vom Kompass zugekauft werden."
+
+
+def search_box() -> dict | None:
+    """Suchfeld für jeden Titel von Yahoo Finance: Name, Kürzel oder ISIN."""
+    query = st.text_input("🔎 Titel suchen", placeholder="Name, Kürzel oder ISIN – z. B. Vanguard All-World, "
+                          "Rheinmetall, IE00B4L5Y983, Bitcoin",
+                          help="Sucht bei Yahoo Finance in ETFs, Aktien, Fonds und Krypto. "
+                               "Euro-Börsen (Xetra) stehen oben, US-Werte rechnet der Kompass in Euro um.")
+    if not query.strip():
+        return None
+    hits = cached_search(query.strip())
+    if not hits:
+        st.caption("Nichts gefunden. Probiere den Namen, das Kürzel (z. B. SAP.DE) oder die ISIN.")
+        return None
+    pick = st.selectbox(f"{len(hits)} Treffer", range(len(hits)), label_visibility="collapsed",
+                        format_func=lambda i: f"{hits[i]['name']} · {hits[i]['ticker']} · "
+                                              f"{hits[i]['type']} · {hits[i]['exchange']}")
+    return hits[pick]
+
+
 hero_slot = st.container()
 tab_home, tab_depot, tab_proof = st.tabs(["Überblick", "Dein Depot", "Beweis"])
+if st.session_state.get("toast"):
+    st.toast(st.session_state.pop("toast"), icon="✅")
 
 # =========================================================================== Eingaben
 with tab_depot:
     theme.section("Schritt 1", "Dein Depot",
                   "Trage ein, was du heute besitzt. Rechts wählst du, was der Kompass zukaufen darf.")
+    ss = st.session_state
+    ss.setdefault("own", [])                      # Titel aus der Suche: [Ticker]
+    CUSTOM_NAMES.update(ss.get("own_names", {}))  # Namen gehören zur Sitzung
     left, right = st.columns([3, 2], gap="large")
-    with right:
-        own_raw = st.text_input("Eigene Titel hinzufügen (Yahoo-Kürzel, mit Komma getrennt)",
-                                placeholder="z. B. AAPL, SAP.DE, IWDA.AS",
-                                help="Jeder Titel von Yahoo Finance: ETFs, Einzelaktien, Fonds. "
-                                     "US-Werte ohne Endung werden in Euro umgerechnet.")
-    own = [x.strip().upper() for x in own_raw.split(",") if x.strip()]
-    options = list(LABEL.values()) + [label_of(t) for t in own if t not in LABEL]
     with left:
         preset = st.selectbox("Vorlage", list(PRESETS))
-        rows, preset_extras = PRESETS[preset]
+    rows, preset_extras = PRESETS[preset]
+    if ss.get("base_preset") != preset:           # neue Vorlage: Tabelle und Bausteine zurücksetzen
+        ss["base_preset"], ss["base_ver"] = preset, ss.get("base_ver", 0) + 1
+        ss["base_df"] = pd.DataFrame({"Position": [label_of(t) for t, _, _, _ in rows],
+                                      "Bestand €": [float(b) for _, b, _, _ in rows],
+                                      "Einstand €": [float(e) for _, _, e, _ in rows],
+                                      "Kern": [bool(c) for _, _, _, c in rows]})
+        ss["extras_sel"] = [LABEL[t] for t in preset_extras if t not in [r[0] for r in rows]]
+    extras_key = f"extras_{ss['base_ver']}"
+    ss.setdefault(extras_key, list(ss["extras_sel"]))
+
+    with left:
+        found = search_box()
+        if found:
+            b1, b2 = st.columns(2)
+            b1.button("➕ Ins Depot übernehmen", on_click=add_to_depot, args=(found,),
+                      width="stretch", type="primary")
+            b2.button("🧩 Als Baustein zukaufen lassen", on_click=add_extra, args=(found, extras_key),
+                      width="stretch")
+    options = list(LABEL.values()) + [label_of(t) for t in ss["own"] if t not in LABEL]
+    with left:
         depot = st.data_editor(
-            pd.DataFrame({"Position": [label_of(t) for t, _, _, _ in rows],
-                          "Bestand €": [float(b) for _, b, _, _ in rows],
-                          "Einstand €": [float(e) for _, _, e, _ in rows],
-                          "Kern": [bool(c) for _, _, _, c in rows]}),
-            key=f"depot_{preset}_{len(options)}", num_rows="dynamic", hide_index=True, width="stretch",
+            ss["base_df"],
+            key=f"depot_{ss['base_ver']}", num_rows="dynamic", hide_index=True, width="stretch",
             column_config={
                 "Position": st.column_config.SelectboxColumn(options=options, required=True,
                                                              width="large"),
@@ -145,19 +215,21 @@ with tab_depot:
                 "Einstand €": st.column_config.NumberColumn(
                     min_value=0, step=100, format="%.0f",
                     help="Was du insgesamt für die Position bezahlt hast (für die Steuerrechnung)")})
+        ss["depot_last"] = depot
         budget = float(st.slider("Monatliche Sparrate in €", 50, 3000, 500, 50))
     depot = depot.dropna(subset=["Position"]).drop_duplicates("Position")
     depot["Kern"] = depot["Kern"].fillna(False).astype(bool)
     depot[["Bestand €", "Einstand €"]] = depot[["Bestand €", "Einstand €"]].fillna(0.0)
     held = [ticker_of(p) for p in depot["Position"]]
     with right:
+        own_extra = [label_of(t) for t in ss["own"] if t not in held and t not in LABEL]
+        ss[extras_key] = [x for x in ss[extras_key] if ticker_of(x) not in held]
         extras_labels = st.multiselect(
             "Bausteine, die der Kompass zukaufen darf",
-            [label_of(t) for t in own if t not in held] +
-            [LABEL[t] for g in GROUPS for t in CATALOG if group_of(t) == g and t not in held],
-            default=[LABEL[t] for t in preset_extras if t not in held],
-            key=f"extras_{preset}_{len(own)}",
-            help="Gold und Euro-Staatsanleihen senken das Risiko am wirksamsten.")
+            own_extra + [LABEL[t] for g in GROUPS for t in CATALOG if group_of(t) == g and t not in held],
+            key=extras_key,
+            help="Gold und Euro-Staatsanleihen senken das Risiko am wirksamsten. Weitere Titel "
+                 "findest du links über die Suche.")
         with st.expander("Steuer-Annahmen"):
             allowance = float(st.number_input("Freier Sparerpauschbetrag in €", 0, 2000, 1000, 100))
             fee = float(st.number_input("Ordergebühr je Verkauf in €", 0.0, 20.0, 1.0, 0.5))

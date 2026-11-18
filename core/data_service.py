@@ -97,8 +97,11 @@ PROXIES: dict[str, tuple[str, str, str]] = {
 PRICE_INDEX_DIVIDEND = 0.018
 
 
+CUSTOM_NAMES: dict[str, str] = {}      # Namen von Titeln aus der Suche (für Grafiken und Tabellen)
+
+
 def display_name(ticker: str) -> str:
-    return CATALOG.get(ticker, (ticker, 0, ""))[0]
+    return CATALOG.get(ticker, (CUSTOM_NAMES.get(ticker, ticker), 0, ""))[0]
 
 
 def default_teilfreistellung(ticker: str) -> int:
@@ -272,6 +275,46 @@ def _custom_prices(tickers: list[str]) -> pd.DataFrame:
             s = (s / fx.reindex(s.index).ffill()).dropna()   # Euro-Kurs erst ab 12/2003 verfügbar
         out[t] = s
     return pd.DataFrame(out)
+
+
+SEARCH_TYPES = {"ETF": "ETF", "EQUITY": "Aktie", "MUTUALFUND": "Fonds", "CRYPTOCURRENCY": "Krypto"}
+
+
+def search_titles(query: str, limit: int = 12, _retry: bool = True) -> list[dict]:
+    """Yahoo-Finance-Suche nach Name, Kürzel oder ISIN.
+
+    Liefert nur Titel, deren Kurs sich in Euro rechnen lässt (Euro-Börsen, US-Börsen, Krypto in USD)
+    und sortiert Euro-Börsen (Xetra zuerst) nach vorne.
+    """
+    query = query.strip()
+    if len(query) < 2:
+        return []
+    try:
+        import yfinance as yf
+        quotes = yf.Search(query, max_results=25, news_count=0).quotes
+    except Exception:
+        return []
+    hits = []
+    for q in quotes:
+        sym, kind = str(q.get("symbol", "")).upper(), q.get("quoteType", "")
+        if not sym or kind not in SEARCH_TYPES:
+            continue
+        cur = "USD" if kind == "CRYPTOCURRENCY" and sym.endswith("-USD") else               "EUR" if kind == "CRYPTOCURRENCY" and sym.endswith("-EUR") else currency_of(sym)
+        if kind == "CRYPTOCURRENCY" and cur == "USD":
+            pass
+        elif cur not in ("EUR", "USD") or "-" in sym or "=" in sym:
+            continue
+        name = (q.get("longname") or q.get("shortname") or sym).strip()
+        hits.append({"ticker": sym, "name": name, "type": SEARCH_TYPES[kind],
+                     "exchange": q.get("exchDisp", ""), "currency": cur})
+    if not hits and quotes and _retry:
+        # ISIN liefert oft nur die Londoner Notierung: mit deren Namen nach Euro-Börsen weitersuchen
+        name = quotes[0].get("longname") or quotes[0].get("shortname")
+        if name:
+            return search_titles(name, limit, _retry=False)
+    rank = {".DE": 0}
+    hits.sort(key=lambda h: (rank.get(h["ticker"][-3:], 1 if h["currency"] == "EUR" else 2)))
+    return hits[:limit]
 
 
 def to_returns(prices: pd.DataFrame) -> pd.DataFrame:
