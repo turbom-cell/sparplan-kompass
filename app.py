@@ -437,6 +437,27 @@ with tab_depot:
         path = [cvar(w, R) * 100 for w in plan.weights.to_numpy()]
         st.plotly_chart(charts.risk_path(list(plan.weights.index), path, limit_pct), width="stretch")
         st.caption("Verlust an einem Schrecktag in % des Depots, Monat für Monat. Rot: deine Schmerzgrenze.")
+    if use_dip and equity.any():
+        theme.section("Nachkaufen in Korrekturen", "Wo gerade mehr gekauft wird",
+                      "Kurs eines Aktien-ETFs mit seinen Tageslinien. Farbig hinterlegt: Phasen, in denen "
+                      "der Kurs darunter lag und dieser ETF mehr von der Sparrate bekommen hat.")
+        eq_tickers = [t for t in tickers if is_equity(t)]
+        d1, d2 = st.columns([2, 3])
+        with d1:
+            dip_pick = st.selectbox("Aktien-ETF", eq_tickers, format_func=display_name, key="dip_pick")
+        with d2:
+            dip_years = st.radio("Zeitraum", [1, 3, 5], index=1, horizontal=True, key="dip_years",
+                                 format_func=lambda y: f"letzte {y} Jahre" if y > 1 else "letztes Jahr")
+        dip_all = analytics.dip_factors(prices, analytics.DIP_BOOST)
+        dip_start = prices.index[-1] - pd.DateOffset(years=dip_years)
+        st.plotly_chart(charts.dip_price_chart(prices[dip_pick], dip_all[dip_pick], display_name(dip_pick),
+                                               dip_start), width="stretch")
+        f_now = float(dip_all[dip_pick].iloc[-1])
+        st.caption(f"Heute: Faktor {num(f_now, 2)} – {display_name(dip_pick)} bekommt "
+                   + ("die normale Sparrate." if f_now <= 1.0 else
+                      f"{num(f_now, 2)}-mal so viel Sparrate wie im Plan (die anderen entsprechend weniger).")
+                   + " Hellgelb = unter der 50-Tage-Linie, orange = zusätzlich unter der 100-Tage-Linie, "
+                     "rot = unter allen drei Linien (doppelt).")
 
 # =========================================================================== Beweis
 with tab_proof:
@@ -477,6 +498,19 @@ with tab_proof:
         st.caption("Oben: gleiche Einzahlungen, Depotwert über die Zeit. Unten: Die blaue Fläche "
                    "(Kompass) ist kleiner als die graue (einfach halten) – das Depot fiel in Krisen "
                    "weniger tief. Rot hinterlegt: Krisenphasen.")
+        if use_dip and equity.any():
+            theme.section("Nachkaufen im Rückblick", "Wann der Kompass mehr gekauft hat",
+                          "Jeder Kasten ist ein Monat. Je röter, desto mehr Sparrate ging an diesem "
+                          "Monatsanfang in den Aktien-ETF, weil er unter seinen Tageslinien lag.")
+            month_days = values.index.to_series().groupby(values.index.to_period("M")).first()
+            dip_hist = analytics.dip_factors(prices, analytics.DIP_BOOST).loc[month_days.values,
+                                                                              [t for t in tickers if is_equity(t)]]
+            dip_hist.columns = [display_name(t) for t in dip_hist.columns]
+            st.plotly_chart(charts.dip_timeline(dip_hist), width="stretch")
+            n_months = int((dip_hist > 1.0).any(axis=1).sum())
+            st.caption(f"In {n_months} von {len(dip_hist)} Monaten lag mindestens ein Aktien-ETF unter "
+                       "einer Tageslinie. Der Aufschlag gilt nur für ETFs, die laut Plan gerade Sparrate "
+                       "bekommen; die Summe bleibt immer die normale Sparrate.")
 
         theme.section("Risiko-Bilanz", f"{risk_wins} von 5 Risikomaßen kleiner als beim einfachen Halten",
                       "Grau = einfach halten, Blau = Kompass. Je kürzer der blaue Balken, desto weniger Risiko.")

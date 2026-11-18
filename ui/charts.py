@@ -284,3 +284,61 @@ def calm_bars(stats: pd.DataFrame) -> go.Figure:
     fig.update_layout(barmode="group", xaxis=dict(visible=False, range=[0, 135]),
                       yaxis=dict(autorange="reversed"), bargap=0.3)
     return _base(fig, 380)
+
+
+# --------------------------------------------------------------------------- Nachkaufen sichtbar machen
+DIP_COLORS = {1.25: "rgba(245,158,11,.18)", 1.5: "rgba(249,115,22,.22)", 1.75: "rgba(234,88,12,.26)",
+              2.0: "rgba(225,29,72,.28)"}
+
+
+def _dip_spans(factor: pd.Series) -> list[tuple[pd.Timestamp, pd.Timestamp, float]]:
+    """Zusammenhängende Zeiträume mit gleichem Nachkauf-Faktor > 1."""
+    spans, start, level = [], None, 1.0
+    for day, f in factor.round(2).items():
+        if f != level:
+            if level > 1.0 and start is not None:
+                spans.append((start, day, level))
+            start, level = day, f
+    if level > 1.0 and start is not None:
+        spans.append((start, factor.index[-1], level))
+    return spans
+
+
+def dip_price_chart(price: pd.Series, factor: pd.Series, name: str, start: pd.Timestamp) -> go.Figure:
+    """Kurs mit 50/100/200-Tage-Linie; farbig hinterlegt, wo mehr gekauft wird.
+
+    Die Linien werden aus der ganzen Kurshistorie berechnet und erst dann auf den Zeitraum gekürzt.
+    """
+    factor = factor.loc[start:]
+    fig = go.Figure()
+    for (span_start, span_end, level) in _dip_spans(factor):
+        fig.add_vrect(x0=span_start, x1=span_end, fillcolor=DIP_COLORS.get(level, "rgba(225,29,72,.2)"),
+                      line_width=0, layer="below")
+    styles = {50: ("#94a3b8", "dot"), 100: ("#64748b", "dash"), 200: ("#0f172a", "solid")}
+    full = price
+    for w, (color, dash) in styles.items():
+        sma = full.rolling(w).mean().loc[start:]
+        fig.add_scatter(x=sma.index, y=sma, name=f"{w}-Tage-Linie", line=dict(color=color, width=1.4, dash=dash),
+                        hovertemplate="%{y:,.2f} €<extra>" + f"{w}-Tage-Linie" + "</extra>")
+    price = price.loc[start:]
+    fig.add_scatter(x=price.index, y=price, name=f"Kurs {name}", line=dict(color=C_GOAL, width=2.4),
+                    hovertemplate="%{y:,.2f} €<extra>Kurs</extra>")
+    # Legenden-Einträge für die Farben
+    for level, label in ((1.25, "1,25-fach"), (1.5, "1,5-fach"), (2.0, "doppelt")):
+        fig.add_scatter(x=[None], y=[None], mode="markers", name=f"Nachkauf {label}",
+                        marker=dict(size=12, symbol="square", color=DIP_COLORS[level].replace(".2", ".6")))
+    fig.update_layout(yaxis_title="Kurs in €", xaxis_title=None, hovermode="x unified")
+    return _base(fig, 420)
+
+
+def dip_timeline(factors: pd.DataFrame) -> go.Figure:
+    """Monat für Monat: mit welchem Faktor jeder Aktien-ETF Sparrate bekam (1 = normal, 2 = doppelt)."""
+    fig = go.Figure(go.Heatmap(
+        z=factors.T.to_numpy(), x=factors.index, y=list(factors.columns),
+        zmin=1.0, zmax=2.0, xgap=1, ygap=4,
+        colorscale=[[0.0, "#eef1f6"], [0.25, "#fde68a"], [0.5, "#fb923c"], [1.0, "#e11d48"]],
+        colorbar=dict(title="Faktor", tickvals=[1, 1.25, 1.5, 1.75, 2],
+                      ticktext=["1,0", "1,25", "1,5", "1,75", "2,0"], thickness=12),
+        hovertemplate="%{x|%m/%Y} · %{y}: %{z:.2f}-fach<extra></extra>"))
+    fig.update_layout(xaxis_title=None, yaxis=dict(autorange="reversed"))
+    return _base(fig, 120 + 46 * len(factors.columns))
