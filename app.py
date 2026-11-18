@@ -130,16 +130,31 @@ def remember(hit: dict) -> str:
     return t
 
 
-DEPOT_COLS = ["Position", "Bestand €", "Einstand €", "Kern"]
+DEPOT_COLS = ["Position", "Anteil %", "Gewinn %", "Kern"]
 
 
 def depot_frame(rows: list[tuple[str, float, float, bool]]) -> pd.DataFrame:
-    """Tabelle für den Editor: Ticker werden zu Anzeige-Labels, dazu die Spalte zum Entfernen."""
+    """Tabelle für den Editor aus Euro-Werten (Ticker, Bestand €, Einstand €, Kern).
+
+    Eingegeben wird in Prozent: Anteil am Depot und Gewinn seit Kauf. Ticker werden zu Labels.
+    """
+    total = sum(float(b) for _, b, _, _ in rows) or 1.0
     return pd.DataFrame({"Position": [label_of(t) for t, _, _, _ in rows],
-                         "Bestand €": [float(b) for _, b, _, _ in rows],
-                         "Einstand €": [float(e) for _, _, e, _ in rows],
+                         "Anteil %": [round(float(b) / total * 100, 1) for _, b, _, _ in rows],
+                         "Gewinn %": [round((float(b) / float(e) - 1) * 100, 1) if float(e) > 0 else 0.0
+                                      for _, b, e, _ in rows],
                          "Kern": [bool(c) for _, _, _, c in rows],
                          "Entfernen": [False] * len(rows)})
+
+
+def to_euro(df: pd.DataFrame, value: float) -> pd.DataFrame:
+    """Prozent-Eingaben in Euro umrechnen: Anteile werden auf 100 % hochgerechnet."""
+    df = df.copy()
+    share = pd.to_numeric(df["Anteil %"], errors="coerce").fillna(0.0).clip(lower=0)
+    gain = pd.to_numeric(df["Gewinn %"], errors="coerce").fillna(0.0).clip(lower=-99)
+    df["Bestand €"] = share / (share.sum() or 1.0) * value
+    df["Einstand €"] = df["Bestand €"] / (1 + gain / 100)
+    return df
 
 
 def set_base(df: pd.DataFrame, extras: list[str] | None = None):
@@ -182,9 +197,9 @@ def on_depot_edit():
 def depot_file() -> str:
     """Depot als JSON zum Herunterladen (bleibt beim Nutzer, auf dem Server wird nichts gespeichert)."""
     ss = st.session_state
-    df = current_depot().dropna(subset=["Position"])
-    data = {"app": "Sparplan-Kompass", "version": 1, "gespeichert": date.today().isoformat(),
-            "sparrate": ss.get("budget", 500),
+    df = to_euro(current_depot().dropna(subset=["Position"]), float(ss.get("depot_value", 10000)))
+    data = {"app": "Sparplan-Kompass", "version": 2, "gespeichert": date.today().isoformat(),
+            "sparrate": ss.get("budget", 500), "depotwert": float(ss.get("depot_value", 10000)),
             "positionen": [{"ticker": ticker_of(r["Position"]),
                             "name": str(r["Position"]).split(" · ")[0],
                             "bestand": float(r["Bestand €"] or 0),
@@ -212,6 +227,7 @@ def load_depot_file():
         set_base(depot_frame(rows), [label_of(str(b["ticker"]).upper()) for b in data.get("bausteine", [])
                                      if str(b["ticker"]).upper() not in held])
         ss["budget"] = int(min(3000, max(50, round(float(data.get("sparrate", 500)) / 50) * 50)))
+        ss["depot_value"] = int(round(sum(r[1] for r in rows))) or 10000
         ss["toast"] = f"Depot geladen: {len(rows)} Positionen."
     except Exception:
         ss["toast_err"] = ("Die Datei konnte nicht gelesen werden. Bitte eine Datei wählen, "
@@ -223,9 +239,11 @@ def add_to_depot(hit: dict):
     t = remember(hit)
     df = current_depot().dropna(subset=["Position"])
     if label_of(t) not in set(df["Position"]):
-        df = pd.concat([df, depot_frame([(t, 1000.0, 1000.0, False)])], ignore_index=True)
+        new = pd.DataFrame({"Position": [label_of(t)], "Anteil %": [10.0], "Gewinn %": [0.0],
+                            "Kern": [False], "Entfernen": [False]})
+        df = pd.concat([df, new], ignore_index=True)
     set_base(df)
-    ss["toast"] = f"{hit['name']} steht jetzt in deinem Depot. Trage Bestand und Einstand ein."
+    ss["toast"] = f"{hit['name']} steht jetzt in deinem Depot. Trage Anteil und Gewinn in % ein."
 
 
 def add_extra(hit: dict, key: str):
@@ -278,6 +296,7 @@ with tab_depot:
     if ss.get("base_preset") != preset:           # neue Vorlage: Tabelle und Bausteine zurücksetzen
         ss["base_preset"], ss["base_ver"] = preset, ss.get("base_ver", 0) + 1
         ss["base_df"] = depot_frame(rows)
+        ss["depot_value"] = int(sum(b for _, b, _, _ in rows))
         ss["extras_sel"] = [LABEL[t] for t in preset_extras if t not in [r[0] for r in rows]]
     extras_key = f"extras_{ss['base_ver']}"
     ss.setdefault(extras_key, list(ss["extras_sel"]))
@@ -292,23 +311,34 @@ with tab_depot:
                       width="stretch")
     options = list(LABEL.values()) + [label_of(t) for t in ss["own"] if t not in LABEL]
     with left:
+        V_input = float(st.number_input("Depotwert gesamt in €", min_value=0, max_value=10_000_000,
+                                        step=500, key="depot_value",
+                                        help="Was dein Depot heute insgesamt wert ist. Die Anteile in % "
+                                             "rechnet der Kompass damit in Euro um."))
         depot = st.data_editor(
             ss["base_df"],
             key=f"depot_{ss['base_ver']}", num_rows="dynamic", hide_index=True, width="stretch",
             on_change=on_depot_edit,
-            column_order=["Entfernen", "Position", "Bestand €", "Einstand €", "Kern"],
+            column_order=["Entfernen", "Position", "Anteil %", "Gewinn %", "Kern"],
             column_config={
                 "Entfernen": st.column_config.CheckboxColumn(
                     "🗑️", width="small", help="Haken setzen: Position wird sofort aus dem Depot genommen."),
                 "Position": st.column_config.SelectboxColumn(options=options, required=True,
-                                                             width="large"),
+                                                             width="medium"),
                 "Kern": st.column_config.CheckboxColumn(
                     help="Kernposition: behält mindestens ihren heutigen Anteil und bekommt weiter "
                          "ihren Teil der Sparrate."),
-                "Bestand €": st.column_config.NumberColumn(min_value=0, step=100, format="%.0f"),
-                "Einstand €": st.column_config.NumberColumn(
-                    min_value=0, step=100, format="%.0f",
-                    help="Was du insgesamt für die Position bezahlt hast (für die Steuerrechnung)")})
+                "Anteil %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.1, format="%.1f %%",
+                    help="Anteil der Position an deinem Depot. Zusammen 100 %."),
+                "Gewinn %": st.column_config.NumberColumn(
+                    min_value=-99.0, step=0.1, format="%.1f %%",
+                    help="Wie viel die Position seit dem Kauf im Plus (oder Minus) ist – steht in "
+                         "deiner Broker-App. Braucht der Kompass für die Steuerrechnung.")})
+        share_sum = float(pd.to_numeric(depot["Anteil %"], errors="coerce").fillna(0).sum())
+        if abs(share_sum - 100) > 0.5 and share_sum > 0:
+            st.caption(f"⚠️ Die Anteile ergeben zusammen {pct(share_sum)}. Der Kompass rechnet sie "
+                       f"anteilig auf 100 % um.")
         st.caption("Neue Zeile: unten auf „+“ klicken oder oben suchen. Entfernen: Haken bei 🗑️ setzen.")
         ss.setdefault("budget", 500)
         budget = float(st.slider("Monatliche Sparrate in €", min_value=50, max_value=3000, step=50,
@@ -322,6 +352,7 @@ with tab_depot:
             st.file_uploader("Gespeicherte Depot-Datei wählen", type=["json"], key="depot_upload",
                              on_change=load_depot_file)
     depot = depot.dropna(subset=["Position"]).drop_duplicates("Position")[DEPOT_COLS].copy()
+    depot = to_euro(depot, V_input)
     depot["Kern"] = depot["Kern"].fillna(False).astype(bool)
     depot[["Bestand €", "Einstand €"]] = depot[["Bestand €", "Einstand €"]].fillna(0.0)
     held = [ticker_of(p) for p in depot["Position"]]
